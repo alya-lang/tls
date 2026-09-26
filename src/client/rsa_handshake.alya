@@ -145,7 +145,7 @@ pub function tls_handshake_complete(ctx: TlsContext) -> TlsContext
     cke_body[1] = bit_and(bit_shr(cke_len, 16), 255)
     cke_body[2] = bit_and(bit_shr(cke_len, 8), 255)
     cke_body[3] = bit_and(cke_len, 255)
-    let cke_rec = record_encode(TlsContentType.Handshake, TlsVersion.Tls10, cke_body)
+    let cke_rec = record_encode(TlsContentType.Handshake, ctx.session.version, cke_body)
     if raw_send(ctx.sock, cke_rec["bytes"]) < 0
         return ctx.fail("failed to send ClientKeyExchange")
     end

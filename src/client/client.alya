@@ -154,6 +154,7 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
     let msg_buf = []
     let cert_body = []
     let cert_found = 0
+    let done_seen = 0
     let rounds = 0
     while rounds < 17
         let progress = 1
@@ -194,13 +195,15 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
             if msg_type == TlsHandshakeType.Certificate
                 cert_body = msg_buf
                 cert_found = 1
-                break
+            end
+            if msg_type == TlsHandshakeType.ServerHelloDone
+                done_seen = 1
             end
             msg_type = -1
             msg_need = 0
             msg_buf = []
         end
-        if cert_found == 1
+        if cert_found == 1 and done_seen == 1
             break
         end
         if rounds >= 16
