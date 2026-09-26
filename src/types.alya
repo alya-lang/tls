@@ -178,12 +178,14 @@ end
 ## - `sock`: Underlying TCP socket handle (-1 when closed).
 ## - `state`: Connection state (`TlsState`).
 ## - `last_error`: Human-readable failure reason (empty on success).
+## - `keys`: Handshake working map (transcript, randoms, leaf, traffic keys).
 pub struct TlsContext
     config,
     session,
     sock: int,
     state: int,
-    last_error: string
+    last_error: string,
+    keys: map
 end
 
 # ───────────────────────────────────────────────────────────────
@@ -290,7 +292,8 @@ pub function tls_context_new(config, session = null) -> TlsContext
         session: sess,
         sock: -1,
         state: TlsState.Closed,
-        last_error: ""
+        last_error: "",
+        keys: {}
     }
 end
 

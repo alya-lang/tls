@@ -11,7 +11,7 @@ repository = "https://github.com/alya-lang/tls"
 keywords = ["alya", "alya-lang", "package", "tls", "ssl", "https", "security", "networking", "c", "ffi"]
 
 [dependencies]
-crypto = { git = "https://github.com/alya-lang/crypto", tag = "v0.3.0" }
+crypto = { git = "https://github.com/alya-lang/crypto", tag = "v0.4.0" }
 
 [build]
 c-sources = ["c/tls.c"]

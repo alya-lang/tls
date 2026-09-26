@@ -120,6 +120,10 @@ pub function tls_connect(config: TlsConfig) -> TlsContext
     ctx.session.state = TlsState.Handshaked
     ctx.session.created_ms = clock_ms()
     ctx.state = TlsState.Handshaked
+    ctx.keys["client_random"] = hello["random"]
+    ctx.keys["server_random"] = sh["random"]
+    ctx.keys["transcript"] = pending_slice(hello["bytes"], 5, len(hello["bytes"]) - 5)
+    ctx.keys["transcript"] = tls_transcript_append(ctx.keys["transcript"], TlsHandshakeType.ServerHello, body)
     let leftover = pending_slice(raw, rec["consumed"], len(raw) - rec["consumed"])
     return tls_read_peer_chain(ctx, leftover)
 end
@@ -148,6 +152,8 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
     let msg_type = -1
     let msg_need = 0
     let msg_buf = []
+    let cert_body = []
+    let cert_found = 0
     let rounds = 0
     while rounds < 17
         let progress = 1
@@ -184,6 +190,17 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
             end
         end
         if msg_need > 0 and len(msg_buf) >= msg_need
+            ctx.keys["transcript"] = tls_transcript_append(ctx.keys["transcript"], msg_type, msg_buf)
+            if msg_type == TlsHandshakeType.Certificate
+                cert_body = msg_buf
+                cert_found = 1
+                break
+            end
+            msg_type = -1
+            msg_need = 0
+            msg_buf = []
+        end
+        if cert_found == 1
             break
         end
         if rounds >= 16
@@ -200,12 +217,13 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
         end
         rounds += 1
     end
-    if msg_type == TlsHandshakeType.Certificate and len(msg_buf) > 0
-        let chain = parse_certificate_chain(msg_buf)
+    if cert_found == 1 and len(cert_body) > 0
+        let chain = parse_certificate_chain(cert_body)
         ctx.session.peer_count = len(chain)
         if len(chain) == 0
             return ctx.fail("peer certificate message was empty")
         end
+        ctx.keys["leaf_der"] = chain[0].der
         tls_verify_session(ctx, chain[0], "", "")
         return ctx
     end
@@ -213,6 +231,24 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
         return ctx.fail("no certificate presented by peer")
     end
     return ctx
+end
+
+## Appends one handshake message (header + body) to a transcript
+pub function tls_transcript_append(transcript, msg_type: int, body) -> array
+    let out = transcript
+    if out is null
+        out = []
+    end
+    out.push(msg_type)
+    out.push(bit_and(bit_shr(len(body), 16), 255))
+    out.push(bit_and(bit_shr(len(body), 8), 255))
+    out.push(bit_and(len(body), 255))
+    let i = 0
+    while i < len(body)
+        out.push(body[i])
+        i += 1
+    end
+    return out
 end
 
 # Copies a byte window from an array.

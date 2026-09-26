@@ -1,0 +1,487 @@
+## TLS 1.2 RSA key-exchange completion and encrypted record transport.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Continues where `tls_connect` stops: premaster encryption with the server
+## RSA key, master derivation, ChangeCipherSpec/Finished exchange with
+## verification, and sequence-numbered AEAD application records. RSA-only
+## suites in v1 (ECDHE needs P-256, tracked separately).
+
+import "crypto" as crypto
+import "../types.alya"
+import "../core/version.alya"
+import "../core/cipher.alya"
+import "../core/record.alya"
+import "../core/handshake.alya"
+import "../core/keys.alya"
+import "../core/protect.alya"
+import "../io/raw.alya"
+import "./client.alya"
+
+# Copies a byte window from an array.
+function hs_slice(data, offset: int, n: int) -> array
+    let part = []
+    if data is null or n <= 0
+        return part
+    end
+    let i = 0
+    while i < n and offset + i < len(data)
+        part.push(data[offset + i])
+        i += 1
+    end
+    return part
+end
+
+# Encodes an integer into 8 big-endian bytes.
+function hs_u64be(v: int) -> array
+    let out = [0, 0, 0, 0, 0, 0, 0, 0]
+    let x = v
+    if x < 0
+        x = 0
+    end
+    let i = 7
+    while i >= 0
+        out[i] = bit_and(x, 255)
+        x = bit_shr(x, 8)
+        i -= 1
+    end
+    return out
+end
+
+## Encrypts a premaster secret with PKCS#1 v1.5 type-2 padding.
+##
+## ### Parameters
+## - `n_bytes`: RSA modulus big-endian bytes.
+## - `e`: RSA public exponent int.
+## - `premaster`: Premaster secret bytes (48 for TLS).
+##
+## ### Returns
+## Encrypted block of modulus length.
+pub function rsa_encrypt_premaster(n_bytes, e: int, premaster) -> array
+    let k = len(n_bytes)
+    let ps = []
+    let ps_len = k - len(premaster) - 3
+    if ps_len >= 8
+        let rnd = crypto::random_bytes(ps_len)
+        let i = 0
+        while i < ps_len
+            let b = rnd[i]
+            if b == 0
+                b = 1
+            end
+            ps.push(b)
+            i += 1
+        end
+    end
+    let em = [0, 2]
+    let i = 0
+    while i < len(ps)
+        em.push(ps[i])
+        i += 1
+    end
+    em.push(0)
+    i = 0
+    while i < len(premaster)
+        em.push(premaster[i])
+        i += 1
+    end
+    let c = crypto::bi_modexp_int(crypto::bi_from_bytes(em), e, crypto::bi_from_bytes(n_bytes))
+    return crypto::bi_to_bytes(c, k)
+end
+
+## Completes the RSA handshake: key exchange, CCS/Finished, verification.
+##
+## Never throws: failures return a `Failed` context with `last_error`.
+##
+## ### Parameters
+## - `ctx`: Handshaked `TlsContext` with leaf, transcript, and randoms.
+##
+## ### Returns
+## Established context, or failed.
+pub function tls_handshake_complete(ctx: TlsContext) -> TlsContext
+    if ctx is null or ctx.sock < 0
+        return ctx.fail("no live handshake to complete")
+    end
+    if ctx.state != TlsState.Handshaked
+        return ctx.fail("handshake not in negotiable state")
+    end
+    let suite = ctx.session.cipher_suite
+    if suite != SUITE_RSA_AES128_GCM_SHA256
+        return ctx.fail("only RSA key exchange supported in v1")
+    end
+    let leaf = ctx.keys["leaf_der"]
+    if leaf is null or len(leaf) == 0
+        return ctx.fail("no server certificate captured")
+    end
+    let pubkey = crypto::rsa_parse_pubkey(leaf)
+    if pubkey["error"] != ""
+        return ctx.fail("server RSA key unparseable: " + pubkey["error"])
+    end
+    let cli_rand = ctx.keys["client_random"]
+    let srv_rand = ctx.keys["server_random"]
+    if cli_rand is null or srv_rand is null
+        return ctx.fail("handshake randoms missing")
+    end
+    let pre = [3, 3]
+    let rnd = crypto::random_bytes(46)
+    let r = 0
+    while r < len(rnd)
+        pre.push(rnd[r])
+        r += 1
+    end
+    let enc = rsa_encrypt_premaster(pubkey["n"], pubkey["e"], pre)
+    let cke_body = [TlsHandshakeType.ClientKeyExchange, 0, 0, 0]
+    let elen = u16_to_bytes(len(enc))
+    let i = 0
+    while i < len(elen)
+        cke_body.push(elen[i])
+        i += 1
+    end
+    i = 0
+    while i < len(enc)
+        cke_body.push(enc[i])
+        i += 1
+    end
+    let cke_len = len(cke_body) - 4
+    cke_body[1] = bit_and(bit_shr(cke_len, 16), 255)
+    cke_body[2] = bit_and(bit_shr(cke_len, 8), 255)
+    cke_body[3] = bit_and(cke_len, 255)
+    let cke_rec = record_encode(TlsContentType.Handshake, TlsVersion.Tls10, cke_body)
+    if raw_send(ctx.sock, cke_rec["bytes"]) < 0
+        return ctx.fail("failed to send ClientKeyExchange")
+    end
+    let transcript = ctx.keys["transcript"]
+    transcript = tls_transcript_append(transcript, TlsHandshakeType.ClientKeyExchange, hs_slice(cke_body, 4, len(cke_body) - 4))
+    let master = master_secret(pre, cli_rand, srv_rand)
+    let kb = key_block(master, srv_rand, cli_rand, 40)
+    let parts = split_key_block(kb, 0, 16, 4)
+    if len(parts["client_key"]) == 0
+        return ctx.fail("key block derivation failed")
+    end
+    ctx.keys["master"] = master
+    ctx.keys["ckey"] = parts["client_key"]
+    ctx.keys["skey"] = parts["server_key"]
+    ctx.keys["civ"] = parts["client_iv"]
+    ctx.keys["siv"] = parts["server_iv"]
+    ctx.keys["seq_send"] = 0
+    ctx.keys["seq_recv"] = 0
+    ctx.keys["transcript"] = transcript
+    let thash = transcript_hash(transcript)
+    let cvd = finished_verify_data(master, "client finished", thash)
+    let fin_body = [TlsHandshakeType.Finished, 0, 0, 12]
+    i = 0
+    while i < len(cvd)
+        fin_body.push(cvd[i])
+        i += 1
+    end
+    let ccs = record_encode(TlsContentType.ChangeCipherSpec, ctx.session.version, [1])
+    if raw_send(ctx.sock, ccs["bytes"]) < 0
+        return ctx.fail("failed to send ChangeCipherSpec")
+    end
+    let fin_wire = tls_protect_record(ctx, TlsContentType.Handshake, fin_body)
+    if len(fin_wire) == 0
+        return ctx.fail("failed to protect Finished")
+    end
+    if raw_send(ctx.sock, fin_wire) < 0
+        return ctx.fail("failed to send Finished")
+    end
+    transcript = tls_transcript_append(transcript, TlsHandshakeType.Finished, hs_slice(fin_body, 4, len(fin_body) - 4))
+    ctx.keys["transcript"] = transcript
+    let expect = finished_verify_data(master, "server finished", transcript_hash(transcript))
+    let got = tls_read_server_finished(ctx)
+    if len(got) == 0
+        return ctx.fail("no server Finished received")
+    end
+    if crypto::bytes_to_hex(got) != crypto::bytes_to_hex(expect)
+        return ctx.fail("server Finished mismatch")
+    end
+    ctx.session.state = TlsState.Established
+    ctx.state = TlsState.Established
+    return ctx
+end
+
+## Protects one record with sequence-numbered AEAD (sender side).
+##
+## Nonce is the 4-byte fixed IV plus big-endian sequence explicit bytes.
+##
+## ### Parameters
+## - `ctx`: Context holding traffic keys and send sequence.
+## - `content_type`: `TlsContentType` code.
+## - `plaintext`: Payload bytes.
+##
+## ### Returns
+## Record wire bytes, or empty on missing keys.
+pub function tls_protect_record(ctx: TlsContext, content_type: int, plaintext) -> array
+    let out = []
+    if ctx is null or ctx.sock < 0
+        return out
+    end
+    let key = ctx.keys["ckey"]
+    let iv4 = ctx.keys["civ"]
+    if key is null or iv4 is null or len(key) == 0 or len(iv4) < 4
+        return out
+    end
+    let seq = ctx.keys["seq_send"]
+    if seq is null
+        seq = 0
+    end
+    let nonce = [iv4[0], iv4[1], iv4[2], iv4[3], 0, 0, 0, 0, 0, 0, 0, 0]
+    let s = seq
+    let b = 11
+    while b >= 4
+        nonce[b] = bit_and(s, 255)
+        s = bit_shr(s, 8)
+        b -= 1
+    end
+    let aad = hs_u64be(seq)
+    aad.push(content_type)
+    let vb = u16_to_bytes(ctx.session.version)
+    aad.push(vb[0])
+    aad.push(vb[1])
+    let lb = u16_to_bytes(len(plaintext))
+    aad.push(lb[0])
+    aad.push(lb[1])
+    let enc = tls_protect_aead(ctx.session.cipher_suite, key, nonce, aad, plaintext)
+    if enc["error"] != ""
+        return []
+    end
+    let payload = []
+    b = 4
+    while b < 12
+        payload.push(nonce[b])
+        b += 1
+    end
+    let t = 0
+    while t < len(enc["ciphertext"])
+        payload.push(enc["ciphertext"][t])
+        t += 1
+    end
+    t = 0
+    while t < len(enc["tag"])
+        payload.push(enc["tag"][t])
+        t += 1
+    end
+    let rec = record_encode(content_type, ctx.session.version, payload)
+    ctx.keys["seq_send"] = seq + 1
+    return rec["bytes"]
+end
+
+## Decrypts one received record (single sequence step).
+##
+## Returns the plaintext for ApplicationData and Handshake records,
+## passes ChangeCipherSpec through, and reports alerts as errors.
+##
+## ### Parameters
+## - `ctx`: Context holding traffic keys and receive sequence.
+## - `rec_bytes`: Full record bytes.
+##
+## ### Returns
+## Map with `type`, `plaintext`, `error`.
+pub function tls_unprotect_record(ctx: TlsContext, rec_bytes) -> map
+    let fail = { "type": 0, "plaintext": [], "error": "invalid record" }
+    if ctx is null
+        return fail
+    end
+    let rec = record_decode(rec_bytes)
+    if rec["error"] != ""
+        return { "type": 0, "plaintext": [], "error": rec["error"] }
+    end
+    if rec["type"] == TlsContentType.Alert
+        return { "type": rec["type"], "plaintext": [], "error": "peer alert" }
+    end
+    if rec["type"] == TlsContentType.ChangeCipherSpec
+        return { "type": rec["type"], "plaintext": rec["fragment"], "error": "" }
+    end
+    let key = ctx.keys["skey"]
+    let iv4 = ctx.keys["siv"]
+    if key is null or iv4 is null or len(key) == 0 or len(iv4) < 4
+        return { "type": 0, "plaintext": [], "error": "no traffic keys" }
+    end
+    let frag = rec["fragment"]
+    if len(frag) < 8 + 1 + 16
+        return { "type": 0, "plaintext": [], "error": "record too short" }
+    end
+    let seq = ctx.keys["seq_recv"]
+    if seq is null
+        seq = 0
+    end
+    let nonce = [iv4[0], iv4[1], iv4[2], iv4[3]]
+    let i = 0
+    while i < 8
+        nonce.push(frag[i])
+        i += 1
+    end
+    let ct = []
+    i = 8
+    while i + 16 < len(frag)
+        ct.push(frag[i])
+        i += 1
+    end
+    let tag = []
+    i = len(frag) - 16
+    while i < len(frag)
+        tag.push(frag[i])
+        i += 1
+    end
+    let aad = hs_u64be(seq)
+    aad.push(rec["type"])
+    let vb = u16_to_bytes(ctx.session.version)
+    aad.push(vb[0])
+    aad.push(vb[1])
+    let lb = u16_to_bytes(len(ct))
+    aad.push(lb[0])
+    aad.push(lb[1])
+    let dec = tls_unprotect_aead(ctx.session.cipher_suite, key, nonce, aad, ct, tag)
+    if dec["error"] != ""
+        return { "type": 0, "plaintext": [], "error": dec["error"] }
+    end
+    ctx.keys["seq_recv"] = seq + 1
+    return { "type": rec["type"], "plaintext": dec["plaintext"], "error": "" }
+end
+
+## Reads the server ChangeCipherSpec + Finished and returns verify bytes.
+##
+## ### Parameters
+## - `ctx`: Context after our Finished flight.
+##
+## ### Returns
+## Server verify_data bytes, or empty on failure.
+pub function tls_read_server_finished(ctx: TlsContext) -> array
+    let out = []
+    if ctx is null or ctx.sock < 0
+        return out
+    end
+    let pending = []
+    let rounds = 0
+    while rounds < 16
+        let chunk = raw_recv(ctx.sock, 4096)
+        if len(chunk) == 0
+            break
+        end
+        let c = 0
+        while c < len(chunk)
+            pending.push(chunk[c])
+            c += 1
+        end
+        let progress = 1
+        while progress == 1 and len(pending) >= 5
+            progress = 0
+            let rec = record_decode(pending)
+            if rec["error"] != ""
+                break
+            end
+            let full = hs_slice(pending, 0, rec["consumed"])
+            pending = hs_slice(pending, rec["consumed"], len(pending) - rec["consumed"])
+            progress = 1
+            if rec["type"] == TlsContentType.Alert
+                return []
+            end
+            if rec["type"] == TlsContentType.ChangeCipherSpec
+                continue
+            end
+            let opened = tls_unprotect_record(ctx, full)
+            if opened["error"] != ""
+                return []
+            end
+            if opened["type"] != TlsContentType.Handshake
+                continue
+            end
+            let pt = opened["plaintext"]
+            if len(pt) >= 16 and pt[0] == TlsHandshakeType.Finished
+                let verify = []
+                let i = 4
+                while i < len(pt)
+                    verify.push(pt[i])
+                    i += 1
+                end
+                return verify
+            end
+            return []
+        end
+        rounds += 1
+    end
+    return out
+end
+
+## Sends application bytes under record encryption.
+##
+## ### Parameters
+## - `ctx`: Established context.
+## - `data`: Plaintext bytes.
+##
+## ### Returns
+## Bytes sent, or -1 on failure.
+pub function tls_send_encrypted(ctx: TlsContext, data) -> int
+    if ctx is null or ctx.sock < 0 or data is null or len(data) == 0
+        return -1
+    end
+    let total = 0
+    let parts = record_fragment(data)
+    if len(parts) == 0
+        parts.push(data)
+    end
+    let i = 0
+    while i < len(parts)
+        let wire = tls_protect_record(ctx, TlsContentType.ApplicationData, parts[i])
+        if len(wire) == 0
+            return -1
+        end
+        let n = raw_send(ctx.sock, wire)
+        if n < 0
+            return -1
+        end
+        total += n
+        i += 1
+    end
+    return total
+end
+
+## Receives and decrypts one ApplicationData payload.
+##
+## ### Parameters
+## - `ctx`: Established context.
+##
+## ### Returns
+## Plaintext bytes (empty on close/error).
+pub function tls_recv_encrypted(ctx: TlsContext) -> array
+    let out = []
+    if ctx is null or ctx.sock < 0
+        return out
+    end
+    let pending = []
+    let rounds = 0
+    while rounds < 16
+        let chunk = raw_recv(ctx.sock, 4096)
+        if len(chunk) == 0
+            break
+        end
+        let c = 0
+        while c < len(chunk)
+            pending.push(chunk[c])
+            c += 1
+        end
+        let progress = 1
+        while progress == 1 and len(pending) >= 5
+            progress = 0
+            let rec = record_decode(pending)
+            if rec["error"] != ""
+                break
+            end
+            let full = hs_slice(pending, 0, rec["consumed"])
+            pending = hs_slice(pending, rec["consumed"], len(pending) - rec["consumed"])
+            progress = 1
+            if rec["type"] == TlsContentType.Alert
+                return []
+            end
+            if rec["type"] != TlsContentType.ApplicationData
+                continue
+            end
+            let opened = tls_unprotect_record(ctx, full)
+            if opened["error"] != ""
+                return []
+            end
+            return opened["plaintext"]
+        end
+        rounds += 1
+    end
+    return out
+end

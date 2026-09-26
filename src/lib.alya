@@ -15,6 +15,7 @@ import "./cert/x509.alya"
 import "./cert/verify.alya"
 import "./cert/crl.alya"
 import "./client/client.alya"
+import "./client/rsa_handshake.alya"
 import "./server/server.alya"
 import "./session/ticket.alya"
 

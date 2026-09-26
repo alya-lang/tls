@@ -1,0 +1,80 @@
+## RSA key-exchange unit tests (offline gates + record roundtrip)
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "crypto" as crypto
+import "../src/lib.alya" as tls
+
+function main()
+    test_suite("TLS RSA-KX Tests")
+    let r = runner_new()
+
+    # 1. PKCS#1 v1.5 padding roundtrip with a synthetic 128-bit key
+    let n = crypto::hex_to_bytes("ffffffffffffff720000000000001321")
+    let e = 65537
+    let d = crypto::hex_to_bytes("93c96c3693c96be3727c8d83727c98e1")
+    let pre = [1, 2, 3, 4]
+    let enc = tls::rsa_encrypt_premaster(n, e, pre)
+    runner_assert_eq(r, len(enc), 16, "ciphertext is modulus length")
+    let raw = crypto::bi_modexp(crypto::bi_from_bytes(enc), crypto::bi_from_bytes(d), crypto::bi_from_bytes(n))
+    let back = crypto::bi_to_bytes(raw, 16)
+    runner_assert_eq(r, back[0], 0, "padding block type zero")
+    runner_assert_eq(r, back[1], 2, "padding block type two")
+    runner_assert_eq(r, back[14], 3, "payload tail byte")
+    runner_assert_eq(r, back[15], 4, "payload last byte")
+
+    # 2. Handshake gates without network
+    let dead = tls::tls_mock_establish(tls::config("example.com"))
+    let no_live = tls::tls_handshake_complete(dead)
+    runner_assert_eq(r, no_live.state, tls::TlsState.Failed, "dead socket fails")
+
+    let cfg = tls::config("example.com")
+    let ctx = tls::tls_context_new(cfg)
+    ctx.state = tls::TlsState.Handshaked
+    ctx.sock = 9
+    ctx.session.cipher_suite = 4865
+    let wrong_suite = tls::tls_handshake_complete(ctx)
+    runner_assert_eq(r, wrong_suite.state, tls::TlsState.Failed, "non-RSA suite rejected")
+
+    ctx.session.cipher_suite = 156
+    let no_cert = tls::tls_handshake_complete(ctx)
+    runner_assert_eq(r, no_cert.state, tls::TlsState.Failed, "missing leaf rejected")
+
+    # 3. Protected record roundtrip with manual keys
+    let m = tls::tls_mock_establish(tls::config("example.com"))
+    m.sock = 9
+    m.session.cipher_suite = 156
+    m.session.version = tls::TlsVersion.Tls12
+    let k = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    let iv = [21, 22, 23, 24]
+    m.keys["ckey"] = k
+    m.keys["skey"] = k
+    m.keys["civ"] = iv
+    m.keys["siv"] = iv
+    m.keys["seq_send"] = 0
+    m.keys["seq_recv"] = 0
+    let wire = tls::tls_protect_record(m, tls::TlsContentType.ApplicationData, [72, 105])
+    runner_assert_true(r, len(wire) > 10, "protected record non-trivial")
+    runner_assert_eq(r, wire[0], 23, "record type preserved")
+    let opened = tls::tls_unprotect_record(m, wire)
+    runner_assert_str_eq(r, opened["error"], "", "unprotect clean")
+    runner_assert_eq(r, len(opened["plaintext"]), 2, "plaintext length")
+    runner_assert_eq(r, opened["plaintext"][0], 72, "plaintext byte")
+    let tampered = []
+    let ti = 0
+    while ti < len(wire)
+        tampered.push(wire[ti])
+        ti += 1
+    end
+    tampered[10] = 255 - tampered[10]
+    m.keys["seq_recv"] = 1
+    let bad = tls::tls_unprotect_record(m, tampered)
+    runner_assert_true(r, bad["error"] != "", "tampered record rejected")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()
