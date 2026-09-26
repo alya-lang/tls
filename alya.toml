@@ -1,0 +1,32 @@
+[package]
+name = "tls"
+version = "0.1.0"
+alya-version = "0.0.19"
+entry = "src/lib.alya"
+description = "Native TLS and SSL client, server, certificate verification and secure networking toolkit for Alya"
+authors = ["Alya Language Contributors <https://github.com/alya-lang>"]
+license = "MIT"
+homepage = "https://github.com/alya-lang/alya"
+repository = "https://github.com/alya-lang/tls"
+keywords = ["alya", "alya-lang", "package", "tls", "ssl", "https", "security", "networking", "c", "ffi"]
+
+[dependencies]
+
+[build]
+c-sources = ["c/tls.c"]
+c-flags = ["-O2"]
+c-include-dirs = ["c"]
+links = "tls"
+
+# [lint]
+# disabled_rules = []
+# exclude = []
+
+# [fmt]
+# exclude = []
+
+# [test]
+# exclude = []
+
+# [bench]
+# exclude = []
