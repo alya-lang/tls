@@ -1,0 +1,59 @@
+## Session ticket tests for tls (offline)
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function main()
+    test_suite("TLS Ticket Tests")
+    let r = runner_new()
+
+    let key = []
+    let i = 0
+    while i < 32
+        key.push(i)
+        i += 1
+    end
+    let master = [9, 9, 9, 9, 9, 9, 9, 9]
+    let cfg = tls::config("example.com")
+    let sess = tls::tls_mock_establish(cfg).session
+
+    let issued = tls::ticket_issue(key, sess, master)
+    runner_assert_str_eq(r, issued["error"], "", "ticket issue clean")
+    runner_assert_true(r, len(issued["ticket"]) > 16, "ticket carries sealed bytes")
+    runner_assert_eq(r, len(issued["nonce"]), 12, "ticket nonce 12 bytes")
+
+    let opened = tls::ticket_open(key, issued["ticket"], issued["nonce"], 0)
+    runner_assert_str_eq(r, opened["error"], "", "ticket open clean")
+    runner_assert_eq(r, opened["version"], tls::TlsVersion.Tls12, "ticket version")
+    runner_assert_eq(r, opened["suite"], 4865, "ticket suite")
+    runner_assert_str_eq(r, opened["sni"], "example.com", "ticket sni")
+    runner_assert_eq(r, len(opened["master"]), 8, "ticket master len")
+    runner_assert_eq(r, opened["master"][0], 9, "ticket master byte")
+
+    let wrong_key = []
+    let k = 0
+    while k < 32
+        wrong_key.push(255 - k)
+        k += 1
+    end
+    let rejected = tls::ticket_open(wrong_key, issued["ticket"], issued["nonce"], 0)
+    runner_assert_true(r, rejected["error"] != "", "wrong key rejected")
+
+    let cut = []
+    let m = 0
+    while m < len(issued["ticket"]) - 1
+        cut.push(issued["ticket"][m])
+        m += 1
+    end
+    runner_assert_true(r, tls::ticket_open(key, cut, issued["nonce"], 0)["error"] != "", "truncated ticket rejected")
+    runner_assert_true(r, tls::ticket_issue([1, 2], sess, master)["error"] != "", "short ticket key rejected")
+    runner_assert_true(r, tls::ticket_issue(key, sess, [])["error"] != "", "empty master rejected")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

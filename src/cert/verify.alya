@@ -138,6 +138,89 @@ pub function verify_fingerprint(cert: TlsCertificate, expected: string) -> int
     return alya_tls_const_eq(have, want)
 end
 
+## Compares two distinguished names by value.
+##
+## Normalizes through concatenation: plain `==` on array-derived strings
+## mis-evaluates inside function scope (compiler issue), so both sides
+## are rebuilt before comparing.
+##
+## ### Parameters
+## - `a`: First name string.
+## - `b`: Second name string.
+##
+## ### Returns
+## `1` on match, `0` otherwise.
+pub function cert_name_eq(a, b) -> int
+    let x = ""
+    if a is not null
+        x = a + ""
+    end
+    let y = ""
+    if b is not null
+        y = b + ""
+    end
+    if x == y and x != ""
+        return 1
+    end
+    return 0
+end
+
+## Checks one chain link: child issuer matches parent subject.
+##
+## ### Parameters
+## - `child`: Lower certificate snapshot.
+## - `parent`: Issuer candidate snapshot.
+##
+## ### Returns
+## `1` when linked, `0` otherwise.
+pub function chain_link_ok(child: TlsCertificate, parent: TlsCertificate) -> int
+    if cert_name_eq(child.issuer, parent.subject) == 1
+        return 1
+    end
+    if cert_name_eq(child.issuer_cn, parent.subject_cn) == 1
+        return 1
+    end
+    return 0
+end
+
+## Verifies name linkage across an ordered leaf-to-root chain.
+##
+## Cryptography-free linkage only: checks issuer/subject continuity and
+## optional validity windows. Signature path validation needs RSA/ECDSA
+## primitives (tracked crypto milestone) and is explicitly out of scope.
+##
+## ### Parameters
+## - `chain`: Ordered certificate array (leaf first).
+## - `now_stamp`: Reference stamp (`""` skips time checks).
+##
+## ### Returns
+## Map with `ok`, `length`, and `detail` fields.
+pub function chain_verify_linkage(chain, now_stamp: string = "") -> map
+    if chain is null or len(chain) == 0
+        return { "ok": 0, "length": 0, "detail": "empty chain" }
+    end
+    if len(chain) == 1
+        if verify_cert_time(chain[0], now_stamp) == 0
+            return { "ok": 0, "length": 1, "detail": "leaf outside validity window" }
+        end
+        return { "ok": 1, "length": 1, "detail": "single-certificate chain linked" }
+    end
+    let i = 0
+    while i + 1 < len(chain)
+        if chain_link_ok(chain[i], chain[i + 1]) == 0
+            return { "ok": 0, "length": len(chain), "detail": "link broken at position " + str(i) }
+        end
+        if verify_cert_time(chain[i], now_stamp) == 0
+            return { "ok": 0, "length": len(chain), "detail": "certificate outside validity window at position " + str(i) }
+        end
+        i += 1
+    end
+    if verify_cert_time(chain[len(chain) - 1], now_stamp) == 0
+        return { "ok": 0, "length": len(chain), "detail": "root outside validity window" }
+    end
+    return { "ok": 1, "length": len(chain), "detail": "chain linkage verified (signatures unchecked)" }
+end
+
 ## Runs hostname, time, and optional pinning checks per verify mode.
 ##
 ## - `Required`: hostname and time must pass; pinning applies when given.

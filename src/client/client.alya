@@ -13,6 +13,7 @@ import "../core/cipher.alya"
 import "../core/record.alya"
 import "../core/handshake.alya"
 import "../cert/verify.alya"
+import "../cert/x509.alya"
 import "../io/raw.alya"
 
 ## Builds a client configuration alias with secure defaults.
@@ -119,7 +120,113 @@ pub function tls_connect(config: TlsConfig) -> TlsContext
     ctx.session.state = TlsState.Handshaked
     ctx.session.created_ms = clock_ms()
     ctx.state = TlsState.Handshaked
+    let leftover = pending_slice(raw, rec["consumed"], len(raw) - rec["consumed"])
+    return tls_read_peer_chain(ctx, leftover)
+end
+
+## Reads the peer Certificate message and enforces verification policy.
+##
+## Continues the handshake read loop after ServerHello, reassembling
+## handshake fragments across records until a Certificate message arrives
+## or the peer stops talking. A received leaf is verified through
+## `tls_verify_session`, so `Required` mode fails closed without further
+## caller action. Time checks are skipped (no wall-clock source); pass a
+## stamp to `tls_verify_session` manually for full validity windows.
+##
+## ### Parameters
+## - `ctx`: Handshaked `TlsContext` (mutated: chain stored, may fail).
+## - `leading`: Already-read trailing bytes from the ServerHello read.
+##
+## ### Returns
+## The same context, verified or failed.
+pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
+    let pending = []
+    if leading is not null
+        pending = leading
+    end
+    let stream = []
+    let msg_type = -1
+    let msg_need = 0
+    let msg_buf = []
+    let rounds = 0
+    while rounds < 17
+        let progress = 1
+        while progress == 1 and len(pending) >= 5
+            progress = 0
+            let rec = record_decode(pending)
+            if rec["error"] != ""
+                break
+            end
+            pending = pending_slice(pending, rec["consumed"], len(pending) - rec["consumed"])
+            progress = 1
+            if rec["type"] == TlsContentType.Alert
+                return ctx.fail("peer returned TLS alert during handshake")
+            end
+            if rec["type"] != TlsContentType.Handshake
+                break
+            end
+            let f = 0
+            while f < len(rec["fragment"])
+                stream.push(rec["fragment"][f])
+                f += 1
+            end
+            while msg_need == 0 and len(stream) >= 4
+                msg_type = stream[0]
+                msg_need = stream[1] * 65536 + stream[2] * 256 + stream[3]
+                stream = pending_slice(stream, 4, len(stream) - 4)
+            end
+            while msg_need > 0 and len(stream) > 0 and len(msg_buf) < msg_need
+                msg_buf.push(stream[0])
+                stream = pending_slice(stream, 1, len(stream) - 1)
+            end
+            if msg_need > 0 and len(msg_buf) >= msg_need
+                break
+            end
+        end
+        if msg_need > 0 and len(msg_buf) >= msg_need
+            break
+        end
+        if rounds >= 16
+            break
+        end
+        let chunk = raw_recv(ctx.sock, 4096)
+        if len(chunk) == 0
+            break
+        end
+        let c = 0
+        while c < len(chunk)
+            pending.push(chunk[c])
+            c += 1
+        end
+        rounds += 1
+    end
+    if msg_type == TlsHandshakeType.Certificate and len(msg_buf) > 0
+        let chain = parse_certificate_chain(msg_buf)
+        ctx.session.peer_count = len(chain)
+        if len(chain) == 0
+            return ctx.fail("peer certificate message was empty")
+        end
+        tls_verify_session(ctx, chain[0], "", "")
+        return ctx
+    end
+    if ctx.config.verify_mode == TlsVerifyMode.Required
+        return ctx.fail("no certificate presented by peer")
+    end
     return ctx
+end
+
+# Copies a byte window from an array.
+function pending_slice(data, offset: int, n: int) -> array
+    let part = []
+    if data is null or n <= 0
+        return part
+    end
+    let i = 0
+    while i < n and offset + i < len(data)
+        part.push(data[offset + i])
+        i += 1
+    end
+    return part
 end
 
 ## Establishes an offline session for framing and policy tests.
@@ -265,6 +372,9 @@ pub function tls_verify_session(ctx: TlsContext, cert, now_stamp: string = "", p
         mode = ctx.config.verify_mode
     end
     if mode == TlsVerifyMode.None
+        if cert is not null
+            ctx.session.peer_fingerprint = cert.fingerprint_sha256
+        end
         return { "ok": 1, "host_ok": 1, "time_ok": 1, "pin_ok": 1, "detail": "verification disabled" }
     end
     if cert is null or ctx is null

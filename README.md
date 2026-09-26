@@ -11,8 +11,8 @@ Native TLS and SSL client, server, certificate verification and secure networkin
 
 ## 🌟 Features
 
-- 🔐 **TLS Client & Server**: TCP dial with ClientHello/ServerHello negotiation (`tls_connect`), listener lifecycle with ClientHello inspection (`tls_server_accept`), and SNI-aware sessions
-- ✅ **Certificate Verification**: RFC 6125 hostname matching (SAN-first, single-label wildcards), validity-window checks, SHA-256 fingerprint pinning, and `Required/Optional/None` policy modes
+- 🔐 **TLS Client & Server**: TCP dial with ClientHello/ServerHello negotiation plus automatic peer-chain read (`tls_connect` verifies the leaf under `Required`), listener lifecycle with ClientHello inspection, and SNI-aware sessions
+- ✅ **Certificate Verification**: RFC 6125 hostname matching, validity windows, SHA-256 pinning, `Required/Optional/None` modes, name-linkage chain checks, and sealed session tickets (RFC 5077 style)
 - 📜 **X.509 & PEM Tooling**: RFC 7468 armor parsing, DER extraction, minimal field scanner (CN, SAN, validity, serial), plus a real openssl-generated certificate vector in tests
 - 🤝 **Handshake & Key Schedule**: Structurally valid ClientHello builder (SNI + ALPN extensions), ServerHello builder/parser roundtrip, `Certificate`-message chain parsing, TLS 1.2 PRF/master-secret/key-block, TLS 1.3 HKDF-Expand-Label, and Finished verify data
 - 🔒 **Bulk AEAD Protection**: Suite-aware `tls_protect_aead`/`tls_unprotect_aead` dispatching AES-GCM and ChaCha20-Poly1305 from `crypto` v0.2.0, with error maps instead of throws
@@ -52,6 +52,8 @@ tls/
 │   │   └── client.alya     # tls_connect, tunnel I/O, mock sessions
 │   └── server/
 │       └── server.alya     # Listener lifecycle, hello inspection
+│   ├── session/
+│   │   └── ticket.alya     # Sealed resumption tickets
 ├── examples/
 │   └── demo.alya           # Comprehensive runnable walkthrough
 ├── tests/
@@ -60,6 +62,7 @@ tls/
 │   ├── test_version.alya   # Negotiation tests
 │   ├── test_cipher.alya    # Suite selection tests
 │   ├── test_protect.alya   # AEAD protect/unprotect tests
+│   ├── test_ticket.alya    # Session ticket tests
 │   ├── test_record.alya    # Framing roundtrip tests
 │   ├── test_handshake.alya # Hello build/parse tests
 │   ├── test_keys.alya      # Key schedule tests
@@ -72,7 +75,7 @@ tls/
 ```
 
 > [!NOTE]
-> **Scope:** `v0.1.0` negotiates versions/suites over real TCP through binary-safe I/O, parses handshake `Certificate` messages, verifies caller-supplied chains with mode enforcement, protects bulk data with negotiated AEAD (keys caller-managed via `core/keys.alya`), and shuts down cleanly with `close_notify`. Remaining: automatic chain extraction during the live handshake, server-side key exchange (ECDHE), chain building, revocation, and session resumption.
+> **Scope:** live handshakes negotiate versions/suites over binary-safe I/O, read and verify the peer chain automatically (`Required` fails closed), seal resumption tickets, and shut down with `close_notify`. Remaining: server-side key exchange — ECDHE needs elliptic-curve + signature primitives (RSA/ECDSA, tracked crypto milestone) — plus full signature path validation, revocation, and ticket-key rotation policy.
 >
 > [!NOTE]
 > **String limitation:** Alya strings cannot hold NUL bytes, so `bytes_to_wire`/`wire_to_bytes` are text-safe-only helpers. All record transport uses byte arrays with `io/raw.alya` (`raw_send`/`raw_recv`).
@@ -210,6 +213,10 @@ main()
 | `verify_hostname(cert, host)` | `cert, host: string` | SAN-first RFC 6125 match |
 | `verify_fingerprint(cert, pin)` | `cert, pin: string` | Constant-time pin compare |
 | `verify_peer(cert, host, mode, now, pin)` | `cert, host, int, str, str` | Full verdict map |
+| `cert_name_eq(a, b)` | `a, b: string` | Value compare (array-safe) |
+| `chain_verify_linkage(chain, now)` | `array, str` | Name-linkage check (signatures unchecked) |
+| `ticket_issue(key, sess, master)` | `array, sess, array` | Sealed resumption ticket |
+| `ticket_open(key, ticket, nonce, age)` | `array, array, array, int` | Ticket validation |
 
 ---
 
@@ -240,6 +247,15 @@ Run the demo example:
 ```bash
 alya run examples/demo.alya
 ```
+
+### Live interop check (manual, needs `openssl`)
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 1 -nodes -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost"
+openssl s_server -accept 18443 -cert cert.pem -key key.pem -www -naccept 1
+```
+
+Then connect with `tls::connect(tls::insecure_config("localhost", 18443))`: expect `TLSv1.2`, an `ECDHE-RSA` suite, `peer_count: 1`, and a fingerprint matching `openssl x509 -in cert.pem -noout -fingerprint -sha256`.
 
 Check code formatting:
 

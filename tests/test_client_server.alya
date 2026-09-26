@@ -84,6 +84,14 @@ function main()
     runner_assert_eq(r, mverdict["ok"], 0, "mtls rejects missing client cert")
     runner_assert_eq(r, mctx.state, tls::TlsState.Failed, "mtls failure recorded")
 
+    # Chain auto-read with no live peer: Required fails closed, Optional passes through
+    let req_ctx = tls::tls_mock_establish(tls::config("example.com"))
+    let req_out = tls::tls_read_peer_chain(req_ctx)
+    runner_assert_eq(r, req_out.state, tls::TlsState.Failed, "required without peer cert fails")
+    let opt_ctx = tls::tls_mock_establish(tls::insecure_config("example.com"))
+    let opt_out = tls::tls_read_peer_chain(opt_ctx)
+    runner_assert_eq(r, opt_out.state, tls::TlsState.Established, "optional without peer cert passes")
+
     let failed = runner_summary(r)
     if failed > 0
         exit(1)

@@ -15,6 +15,7 @@ import "./cert/x509.alya"
 import "./cert/verify.alya"
 import "./client/client.alya"
 import "./server/server.alya"
+import "./session/ticket.alya"
 
 # ═══════════════════════════════════════════════════════════════
 # High-Level Idiomatic TLS API

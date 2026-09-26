@@ -153,7 +153,8 @@ end
 ## - `sni`: Server name used during negotiation.
 ## - `alpn`: Protocol selected by the server (or empty).
 ## - `state`: Session state (`TlsState`).
-## - `peer_fingerprint`: Peer certificate SHA-256 fingerprint (or empty).
+## - `peer_fingerprint`: Leaf certificate SHA-256 fingerprint (or empty).
+## - `peer_count`: Certificates seen in the peer chain (0 when unread).
 ## - `created_ms`: Session creation timestamp (`clock_ms()`).
 pub struct TlsSession
     id_hex: string,
@@ -163,6 +164,7 @@ pub struct TlsSession
     alpn: string,
     state: int,
     peer_fingerprint: string,
+    peer_count: int,
     created_ms: int
 end
 
@@ -262,6 +264,7 @@ pub function tls_session_new(sni: string = "") -> TlsSession
         alpn: "",
         state: TlsState.Closed,
         peer_fingerprint: "",
+        peer_count: 0,
         created_ms: clock_ms()
     }
 end

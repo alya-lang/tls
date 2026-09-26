@@ -1,0 +1,193 @@
+## Stateless session tickets sealed with AES-GCM (RFC 5077 style).
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Lets servers resume sessions without per-client storage: session
+## parameters are serialized, sealed under a server-held ticket key, and
+## handed to the client. Ticket keys stay caller-managed and must rotate.
+
+import "crypto" as crypto
+import "../types.alya"
+import "../core/cipher.alya"
+import "../core/protect.alya"
+
+## Ticket format label bound into the AEAD associated data.
+pub const TICKET_AAD = "alya-tls-ticket-v1"
+
+## Seals session parameters into a ticket.
+##
+## ### Parameters
+## - `ticket_key`: 32-byte server ticket key array.
+## - `session`: Established `TlsSession` snapshot.
+## - `master`: Key-block master secret bytes (max 255 bytes).
+##
+## ### Returns
+## Map with `ticket`, `nonce`, and `error` fields.
+pub function ticket_issue(ticket_key, session: TlsSession, master) -> map
+    let fail = { "ticket": [], "nonce": [], "error": "invalid ticket input" }
+    if len(ticket_key) != 32
+        return { "ticket": [], "nonce": [], "error": "ticket key must be 32 bytes" }
+    end
+    if master is null or len(master) == 0 or len(master) > 255
+        return fail
+    end
+    let sni = session.sni
+    if sni is null
+        sni = ""
+    end
+    if len(sni) > 255
+        return fail
+    end
+    let plain = []
+    let vb = u16_encode(session.version)
+    plain.push(vb[0])
+    plain.push(vb[1])
+    let sb = u16_encode(session.cipher_suite)
+    plain.push(sb[0])
+    plain.push(sb[1])
+    plain.push(len(master))
+    let m = 0
+    while m < len(master)
+        plain.push(master[m])
+        m += 1
+    end
+    plain.push(len(sni))
+    let n = 0
+    while n < len(sni)
+        plain.push(ord(char_at(sni, n)))
+        n += 1
+    end
+    let created = clock_ms()
+    let cb = u64_encode(created)
+    let k = 0
+    while k < 8
+        plain.push(cb[k])
+        k += 1
+    end
+    let nonce = crypto::random_bytes(12)
+    let aad = []
+    let a = 0
+    while a < len(TICKET_AAD)
+        aad.push(ord(char_at(TICKET_AAD, a)))
+        a += 1
+    end
+    let sealed = tls_protect_aead(SUITE_AES_128_GCM_SHA256, ticket_key, nonce, aad, plain)
+    if sealed["error"] != ""
+        return { "ticket": [], "nonce": [], "error": sealed["error"] }
+    end
+    let out = []
+    let t = 0
+    while t < len(sealed["ciphertext"])
+        out.push(sealed["ciphertext"][t])
+        t += 1
+    end
+    t = 0
+    while t < len(sealed["tag"])
+        out.push(sealed["tag"][t])
+        t += 1
+    end
+    return { "ticket": out, "nonce": nonce, "error": "" }
+end
+
+## Opens and validates a ticket issued by `ticket_issue`.
+##
+## ### Parameters
+## - `ticket_key`: 32-byte server ticket key array.
+## - `ticket`: Sealed ticket bytes (ciphertext + 16-byte tag).
+## - `nonce`: Nonce returned at issuance.
+## - `max_age_ms`: Freshness limit (`0` skips the age check).
+##
+## ### Returns
+## Map with `version`, `suite`, `master`, `sni`, `created_ms`, and `error`.
+pub function ticket_open(ticket_key, ticket, nonce, max_age_ms: int = 0) -> map
+    let fail = { "version": 0, "suite": 0, "master": [], "sni": "", "created_ms": 0, "error": "invalid ticket" }
+    if len(ticket_key) != 32 or ticket is null or len(ticket) < 17 or len(nonce) != 12
+        return fail
+    end
+    let aad = []
+    let a = 0
+    while a < len(TICKET_AAD)
+        aad.push(ord(char_at(TICKET_AAD, a)))
+        a += 1
+    end
+    let ct_len = len(ticket) - 16
+    let ct = []
+    let i = 0
+    while i < ct_len
+        ct.push(ticket[i])
+        i += 1
+    end
+    let tag = []
+    i = 0
+    while i < 16
+        tag.push(ticket[ct_len + i])
+        i += 1
+    end
+    let opened = tls_unprotect_aead(SUITE_AES_128_GCM_SHA256, ticket_key, nonce, aad, ct, tag)
+    if opened["error"] != ""
+        return { "version": 0, "suite": 0, "master": [], "sni": "", "created_ms": 0, "error": opened["error"] }
+    end
+    let plain = opened["plaintext"]
+    if len(plain) < 14
+        return fail
+    end
+    let version = plain[0] * 256 + plain[1]
+    let suite = plain[2] * 256 + plain[3]
+    let mlen = plain[4]
+    if 5 + mlen + 1 + 8 > len(plain)
+        return fail
+    end
+    let master = []
+    i = 0
+    while i < mlen
+        master.push(plain[5 + i])
+        i += 1
+    end
+    let slen = plain[5 + mlen]
+    if 5 + mlen + 1 + slen + 8 != len(plain)
+        return fail
+    end
+    let sni = ""
+    i = 0
+    while i < slen
+        sni = sni + chr(plain[5 + mlen + 1 + i])
+        i += 1
+    end
+    let created = 0
+    i = 0
+    while i < 8
+        created = created * 256 + plain[5 + mlen + 1 + slen + i]
+        i += 1
+    end
+    if max_age_ms > 0 and clock_ms() - created > max_age_ms
+        return { "version": 0, "suite": 0, "master": [], "sni": "", "created_ms": 0, "error": "ticket expired" }
+    end
+    return { "version": version, "suite": suite, "master": master, "sni": sni, "created_ms": created, "error": "" }
+end
+
+# Encodes an unsigned 16-bit value big-endian.
+function u16_encode(v: int) -> array
+    let n = v
+    if n < 0
+        n = 0
+    end
+    if n > 65535
+        n = 65535
+    end
+    return [bit_and(bit_shr(n, 8), 255), bit_and(n, 255)]
+end
+
+# Encodes an integer into 8 big-endian bytes.
+function u64_encode(v: int) -> array
+    let out = [0, 0, 0, 0, 0, 0, 0, 0]
+    let x = v
+    if x < 0
+        x = 0
+    end
+    let i = 7
+    while i >= 0
+        out[i] = bit_and(x, 255)
+        x = bit_shr(x, 8)
+        i -= 1
+    end
+    return out
+end

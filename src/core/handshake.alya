@@ -108,6 +108,59 @@ pub function alpn_extension(protocols) -> array
     return ext
 end
 
+## Builds the signature_algorithms extension (RFC 8446 section 4.2.3).
+##
+## Without it, strict servers reject the hello (no shared cipher/suite).
+## Offers ECDSA + RSA-PSS + PKCS#1 with SHA-256/384.
+##
+## ### Returns
+## Extension byte array (type `0x000d`).
+pub function sigalgs_extension() -> array
+    let schemes = [1027, 2052, 1025, 1283, 2053, 1281]
+    let data = u16_to_bytes(len(schemes) * 2)
+    let s = 0
+    while s < len(schemes)
+        let sb = u16_to_bytes(schemes[s])
+        data.push(sb[0])
+        data.push(sb[1])
+        s += 1
+    end
+    let ext_len = u16_to_bytes(len(data))
+    let ext = [0, 13, ext_len[0], ext_len[1]]
+    let n = 0
+    while n < len(data)
+        ext.push(data[n])
+        n += 1
+    end
+    return ext
+end
+
+## Builds the supported_groups extension (RFC 8446 section 4.2.7).
+##
+## Advertises secp256r1, secp384r1, and x25519 for ECDHE key exchange.
+##
+## ### Returns
+## Extension byte array (type `0x000a`).
+pub function groups_extension() -> array
+    let groups = [23, 24, 29]
+    let data = u16_to_bytes(len(groups) * 2)
+    let g = 0
+    while g < len(groups)
+        let gb = u16_to_bytes(groups[g])
+        data.push(gb[0])
+        data.push(gb[1])
+        g += 1
+    end
+    let ext_len = u16_to_bytes(len(data))
+    let ext = [0, 10, ext_len[0], ext_len[1]]
+    let n = 0
+    while n < len(data)
+        ext.push(data[n])
+        n += 1
+    end
+    return ext
+end
+
 ## Builds a complete ClientHello record for the given config.
 ##
 ## ### Parameters
@@ -115,8 +168,8 @@ end
 ## - `suites`: Cipher suite preference array (empty means defaults).
 ##
 ## ### Returns
-## Map with `random`, `suites`, `sni`, `wire` record bytes, and handshake
-## `body` bytes for transcript hashing.
+## Map with `random`, `suites`, `sni`, `version`, record `bytes`, and
+## handshake `body` bytes for transcript hashing.
 pub function build_client_hello(config, suites = null) -> map
     let prefs = suites
     if prefs is null or len(prefs) == 0
@@ -160,6 +213,18 @@ pub function build_client_hello(config, suites = null) -> map
     while a < len(alpn)
         exts.push(alpn[a])
         a += 1
+    end
+    let sigalgs = sigalgs_extension()
+    let g = 0
+    while g < len(sigalgs)
+        exts.push(sigalgs[g])
+        g += 1
+    end
+    let groups = groups_extension()
+    g = 0
+    while g < len(groups)
+        exts.push(groups[g])
+        g += 1
     end
     let ext_len = u16_to_bytes(len(exts))
     body.push(ext_len[0])

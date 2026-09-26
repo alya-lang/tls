@@ -56,6 +56,35 @@ function main()
     let off = tls::verify_peer(cert, "evil.com", tls::TlsVerifyMode.None, "", "")
     runner_assert_eq(r, off["ok"], 1, "disabled mode passes")
 
+    runner_assert_eq(r, tls::cert_name_eq("CN=Test", "CN=Test"), 1, "name eq match")
+    runner_assert_eq(r, tls::cert_name_eq("CN=A", "CN=B"), 0, "name eq mismatch")
+    runner_assert_eq(r, tls::cert_name_eq("", ""), 0, "empty names never match")
+
+    let leaf = tls::tls_cert_empty()
+    leaf.subject = "CN=example.com"
+    leaf.subject_cn = "example.com"
+    leaf.issuer = "CN=Test CA"
+    leaf.issuer_cn = "Test CA"
+    leaf.not_before = "20230101000000Z"
+    leaf.not_after = "20300101000000Z"
+    let root = tls::tls_cert_empty()
+    root.subject = "CN=Test CA"
+    root.subject_cn = "Test CA"
+    root.issuer = "CN=Test CA"
+    root.issuer_cn = "Test CA"
+    root.not_before = "20230101000000Z"
+    root.not_after = "20300101000000Z"
+    runner_assert_eq(r, tls::chain_link_ok(leaf, root), 1, "leaf links to root")
+    runner_assert_eq(r, tls::chain_link_ok(root, leaf), 0, "reversed link fails")
+    let linked = tls::chain_verify_linkage([leaf, root], "20260101000000Z")
+    runner_assert_eq(r, linked["ok"], 1, "ordered chain links")
+    runner_assert_eq(r, linked["length"], 2, "chain length reported")
+    let broken = tls::chain_verify_linkage([root, leaf], "20260101000000Z")
+    runner_assert_eq(r, broken["ok"], 0, "misordered chain fails")
+    let stale = tls::chain_verify_linkage([leaf, root], "20310101000000Z")
+    runner_assert_eq(r, stale["ok"], 0, "expired chain fails")
+    runner_assert_eq(r, tls::chain_verify_linkage([], "")["ok"], 0, "empty chain fails")
+
     let advisory = tls::verify_peer(cert, "evil.com", tls::TlsVerifyMode.Optional, "20240101000000Z", "")
     runner_assert_eq(r, advisory["ok"], 1, "optional stays advisory on mismatch")
     runner_assert_eq(r, advisory["host_ok"], 0, "optional still reports host mismatch")
