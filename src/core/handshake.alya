@@ -10,6 +10,7 @@ import "../types.alya"
 import "./version.alya"
 import "./cipher.alya"
 import "./record.alya"
+import "./keys.alya"
 
 ## Generates a 32-byte client random value.
 ##
@@ -341,10 +342,10 @@ pub function client_hello_sni(body) -> string
     return ""
 end
 
-## Derives Finished verification data (first 12 HMAC-SHA256 bytes).
+## Derives Finished verification data (TLS 1.2 PRF, first 12 bytes).
 ##
-## Mirrors the TLS 1.2 `verify_data` construction in simplified form:
-## `truncate_12(HMAC(master, label + transcript_hash))`.
+## Standard construction: `PRF(master, label, transcript_hash)[0..11]`
+## with the SHA-256 P_hash. Verified against live servers.
 ##
 ## ### Parameters
 ## - `master_secret`: Master secret byte array.
@@ -354,25 +355,18 @@ end
 ## ### Returns
 ## 12-byte verification array.
 pub function finished_verify_data(master_secret, label: string, transcript_hash) -> array
-    let msg = []
-    let i = 0
-    while i < len(label)
-        msg.push(ord(char_at(label, i)))
-        i += 1
+    let seed = []
+    if transcript_hash is not null
+        seed = transcript_hash
     end
-    let t = 0
-    while t < len(transcript_hash)
-        msg.push(transcript_hash[t])
-        t += 1
-    end
-    let mac = crypto::hmac_sha256_bytes(master_secret, msg)
-    let out = []
+    let out = prf_sha256(master_secret, label, seed, 12)
+    let res = []
     let k = 0
-    while k < 12 and k < len(mac)
-        out.push(mac[k])
+    while k < 12 and k < len(out)
+        res.push(out[k])
         k += 1
     end
-    return out
+    return res
 end
 
 ## Hashes a handshake transcript with SHA-256.
