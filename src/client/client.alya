@@ -157,6 +157,7 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
     let done_seen = 0
     let rounds = 0
     while rounds < 17
+        let pending_before = len(pending)
         let progress = 1
         while progress == 1 and len(pending) >= 5
             progress = 0
@@ -205,6 +206,9 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
         end
         if cert_found == 1 and done_seen == 1
             break
+        end
+        if len(pending) >= 5 and len(pending) < pending_before
+            continue
         end
         if rounds >= 16
             break
