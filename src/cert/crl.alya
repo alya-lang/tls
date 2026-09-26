@@ -1,0 +1,221 @@
+## Certificate Revocation List parsing and verification (RFC 5280 lite).
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Walks TBSCertList children by exact TLV lengths (no heuristics), checks
+## the issuer RSA signature through `crypto`, and answers serial queries.
+## Fetching and freshness policy stay caller-side; OCSP is tracked work.
+
+import "crypto" as crypto
+import "../types.alya"
+import "./pem.alya"
+import "./x509.alya"
+import "./verify.alya"
+
+## Reads one TLV header at a position.
+##
+## ### Parameters
+## - `data`: DER byte array.
+## - `pos`: Read offset.
+##
+## ### Returns
+## Map with `tag`, `length`, `header_len`, `total_len`, `error`.
+pub function crl_tlv_at(data, pos: int) -> map
+    let fail = { "tag": 0, "length": 0, "header_len": 0, "total_len": 0, "error": "truncated" }
+    if data is null or pos < 0 or len(data) < pos + 2
+        return fail
+    end
+    let tag = data[pos]
+    let first = data[pos + 1]
+    if first < 128
+        return { "tag": tag, "length": first, "header_len": 2, "total_len": 2 + first, "error": "" }
+    end
+    let octets = first - 128
+    if octets <= 0 or octets > 4 or len(data) < pos + 2 + octets
+        return { "tag": 0, "length": 0, "header_len": 0, "total_len": 0, "error": "bad length" }
+    end
+    let length = 0
+    let i = 0
+    while i < octets
+        length = length * 256 + data[pos + 2 + i]
+        i += 1
+    end
+    return { "tag": tag, "length": length, "header_len": 2 + octets, "total_len": 2 + octets + length, "error": "" }
+end
+
+## Reads raw time-stamp characters from DER bytes.
+##
+## ### Parameters
+## - `data`: DER byte array.
+## - `pos`: Value offset (first content byte).
+## - `length`: Value length in bytes.
+##
+## ### Returns
+## Raw stamp string (e.g. `"260926221828Z"`).
+pub function crl_time_str(data, pos: int, length: int) -> string
+    let out = ""
+    if data is null or length <= 0 or pos < 0 or pos + length > len(data)
+        return out
+    end
+    let k = 0
+    while k < length
+        out = out + chr(data[pos + k])
+        k += 1
+    end
+    return out
+end
+
+## Copies a byte window from an array.
+function crl_slice(data, offset: int, n: int) -> array
+    let part = []
+    if data is null or n <= 0
+        return part
+    end
+    let i = 0
+    while i < n and offset + i < len(data)
+        part.push(data[offset + i])
+        i += 1
+    end
+    return part
+end
+
+## Parses a DER CRL into issuer, updates, and revoked serials.
+##
+## ### Parameters
+## - `der`: CRL DER bytes.
+##
+## ### Returns
+## Map with `issuer_cn`, `this_update`, `next_update`, `revoked`
+## (serial hex array), and `error` fields.
+pub function crl_parse(der) -> map
+    let fail = { "issuer_cn": "", "this_update": "", "next_update": "", "revoked": [], "error": "malformed CRL" }
+    if der is null or len(der) < 16
+        return fail
+    end
+    let outer = crl_tlv_at(der, 0)
+    if outer["error"] != "" or outer["tag"] != 48
+        return fail
+    end
+    let tbs_pos = outer["header_len"]
+    let tbs = crl_tlv_at(der, tbs_pos)
+    if tbs["error"] != "" or tbs["tag"] != 48
+        return fail
+    end
+    let cur = tbs_pos + tbs["header_len"]
+    let tbs_end = tbs_pos + tbs["total_len"]
+    let first = crl_tlv_at(der, cur)
+    if first["error"] != ""
+        return fail
+    end
+    if first["tag"] == 160
+        cur += first["total_len"]
+    elif first["tag"] == 2
+        cur += first["total_len"]
+    end
+    let sig_alg = crl_tlv_at(der, cur)
+    if sig_alg["error"] != ""
+        return fail
+    end
+    cur += sig_alg["total_len"]
+    let issuer = crl_tlv_at(der, cur)
+    if issuer["error"] != "" or issuer["tag"] != 48
+        return fail
+    end
+    let issuer_cn = ""
+    let cns = collect_common_names(crl_slice(der, cur + issuer["header_len"], issuer["length"]))
+    if len(cns) > 0
+        issuer_cn = cns[len(cns) - 1]
+    end
+    cur += issuer["total_len"]
+    let this_update = ""
+    let next_update = ""
+    let tu = crl_tlv_at(der, cur)
+    if tu["error"] == "" and (tu["tag"] == 23 or tu["tag"] == 24)
+        this_update = normalize_time_stamp(crl_time_str(der, cur + tu["header_len"], tu["length"]))
+        cur += tu["total_len"]
+        let nu = crl_tlv_at(der, cur)
+        if nu["error"] == "" and (nu["tag"] == 23 or nu["tag"] == 24)
+            next_update = normalize_time_stamp(crl_time_str(der, cur + nu["header_len"], nu["length"]))
+            cur += nu["total_len"]
+        end
+    end
+    let revoked = []
+    if cur < tbs_end
+        let rl = crl_tlv_at(der, cur)
+        if rl["error"] == "" and rl["tag"] == 48
+            let epos = cur + rl["header_len"]
+            let eend = epos + rl["length"]
+            if eend > tbs_end
+                eend = tbs_end
+            end
+            while epos + 2 <= eend
+                let entry = crl_tlv_at(der, epos)
+                if entry["error"] != "" or entry["tag"] != 48
+                    break
+                end
+                let serial = crl_tlv_at(der, epos + entry["header_len"])
+                if serial["error"] != "" or serial["tag"] != 2
+                    break
+                end
+                let hex = "0123456789abcdef"
+                let sh = ""
+                let k = 0
+                let skip = 0
+                if serial["length"] > 1 and der[epos + entry["header_len"] + serial["header_len"]] == 0
+                    skip = 1
+                end
+                while k < serial["length"]
+                    if k >= skip
+                        let b = der[epos + entry["header_len"] + serial["header_len"] + k]
+                        sh = sh + char_at(hex, bit_and(bit_shr(b, 4), 15)) + char_at(hex, bit_and(b, 15))
+                    end
+                    k += 1
+                end
+                revoked.push(sh)
+                epos += entry["total_len"]
+            end
+        end
+    end
+    return { "issuer_cn": issuer_cn, "this_update": this_update, "next_update": next_update, "revoked": revoked, "error": "" }
+end
+
+## Verifies a CRL signature against the issuer public key.
+##
+## The outer shape matches certificates, so verification reuses the
+## RSA path with the same algorithm detection.
+##
+## ### Parameters
+## - `der`: CRL DER bytes.
+## - `issuer_n`: Issuer modulus bytes.
+## - `issuer_e`: Issuer exponent int.
+##
+## ### Returns
+## `1` on valid signature, `0` otherwise.
+pub function crl_verify_signature(der, issuer_n, issuer_e: int) -> int
+    return crypto::rsa_verify_cert(der, issuer_n, issuer_e)
+end
+
+## Checks whether a serial is listed as revoked.
+##
+## ### Parameters
+## - `crl`: Parsed CRL map from `crl_parse`.
+## - `serial_hex`: Serial in hex (any case, separators allowed).
+##
+## ### Returns
+## `1` when revoked, `0` otherwise.
+pub function crl_serial_revoked(crl, serial_hex: string) -> int
+    if crl is null or serial_hex is null
+        return 0
+    end
+    let want = fingerprint_normalize(serial_hex)
+    if want == ""
+        return 0
+    end
+    let i = 0
+    while i < len(crl["revoked"])
+        if cert_name_eq(crl["revoked"][i], want) == 1
+            return 1
+        end
+        i += 1
+    end
+    return 0
+end

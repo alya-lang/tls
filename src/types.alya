@@ -131,6 +131,7 @@ end
 ## - `not_after`: Validity end (`YYYYMMDDHHMMSSZ` normalized).
 ## - `fingerprint_sha256`: Lowercase hex SHA-256 over DER bytes.
 ## - `der_len`: Raw DER byte length.
+## - `der`: Raw DER bytes (kept for signature verification).
 pub struct TlsCertificate
     subject: string,
     issuer: string,
@@ -141,7 +142,8 @@ pub struct TlsCertificate
     not_before: string,
     not_after: string,
     fingerprint_sha256: string,
-    der_len: int
+    der_len: int,
+    der: array
 end
 
 ## Negotiated session parameters.
@@ -240,7 +242,8 @@ pub function tls_cert_empty() -> TlsCertificate
         not_before: "",
         not_after: "",
         fingerprint_sha256: "",
-        der_len: 0
+        der_len: 0,
+        der: []
     }
 end
 

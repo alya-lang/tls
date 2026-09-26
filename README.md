@@ -12,7 +12,7 @@ Native TLS and SSL client, server, certificate verification and secure networkin
 ## 🌟 Features
 
 - 🔐 **TLS Client & Server**: TCP dial with ClientHello/ServerHello negotiation plus automatic peer-chain read (`tls_connect` verifies the leaf under `Required`), listener lifecycle with ClientHello inspection, and SNI-aware sessions
-- ✅ **Certificate Verification**: RFC 6125 hostname matching, validity windows, SHA-256 pinning, `Required/Optional/None` modes, name-linkage chain checks, and sealed session tickets (RFC 5077 style)
+- ✅ **Certificate Verification**: RFC 6125 hostname matching, validity windows, SHA-256 pinning, `Required/Optional/None` modes, RSA signature chain validation, CRL revocation checks, name-linkage checks, and sealed session tickets (RFC 5077 style)
 - 📜 **X.509 & PEM Tooling**: RFC 7468 armor parsing, DER extraction, minimal field scanner (CN, SAN, validity, serial), plus a real openssl-generated certificate vector in tests
 - 🤝 **Handshake & Key Schedule**: Structurally valid ClientHello builder (SNI + ALPN extensions), ServerHello builder/parser roundtrip, `Certificate`-message chain parsing, TLS 1.2 PRF/master-secret/key-block, TLS 1.3 HKDF-Expand-Label, and Finished verify data
 - 🔒 **Bulk AEAD Protection**: Suite-aware `tls_protect_aead`/`tls_unprotect_aead` dispatching AES-GCM and ChaCha20-Poly1305 from `crypto` v0.2.0, with error maps instead of throws
@@ -47,7 +47,8 @@ tls/
 │   ├── cert/
 │   │   ├── pem.alya        # PEM armor, DER extraction, fingerprints
 │   │   ├── x509.alya       # Minimal DER field scanner
-│   │   └── verify.alya     # Hostname, time, pinning, peer verdicts
+│   │   ├── verify.alya     # Hostname, time, pinning, chain signatures
+│   │   └── crl.alya        # CRL parsing, RSA verify, serial queries
 │   ├── client/
 │   │   └── client.alya     # tls_connect, tunnel I/O, mock sessions
 │   └── server/
@@ -63,6 +64,7 @@ tls/
 │   ├── test_cipher.alya    # Suite selection tests
 │   ├── test_protect.alya   # AEAD protect/unprotect tests
 │   ├── test_ticket.alya    # Session ticket tests
+│   ├── test_crl.alya       # CRL parsing and verification tests
 │   ├── test_record.alya    # Framing roundtrip tests
 │   ├── test_handshake.alya # Hello build/parse tests
 │   ├── test_keys.alya      # Key schedule tests
@@ -75,7 +77,7 @@ tls/
 ```
 
 > [!NOTE]
-> **Scope:** live handshakes negotiate versions/suites over binary-safe I/O, read and verify the peer chain automatically (`Required` fails closed), seal resumption tickets, and shut down with `close_notify`. Remaining: server-side key exchange — ECDHE needs elliptic-curve + signature primitives (RSA/ECDSA, tracked crypto milestone) — plus full signature path validation, revocation, and ticket-key rotation policy.
+> **Scope:** live handshakes negotiate versions/suites over binary-safe I/O, read and verify the peer chain automatically (`Required` fails closed, RSA signatures checked, CRL serials queryable), seal resumption tickets, and shut down with `close_notify`. Remaining: server-side ECDHE key exchange (needs P-256/ECDSA primitives), ECDSA chain validation, OCSP (needs network responder), and ticket-key rotation policy.
 >
 > [!NOTE]
 > **String limitation:** Alya strings cannot hold NUL bytes, so `bytes_to_wire`/`wire_to_bytes` are text-safe-only helpers. All record transport uses byte arrays with `io/raw.alya` (`raw_send`/`raw_recv`).
@@ -213,6 +215,11 @@ main()
 | `verify_hostname(cert, host)` | `cert, host: string` | SAN-first RFC 6125 match |
 | `verify_fingerprint(cert, pin)` | `cert, pin: string` | Constant-time pin compare |
 | `verify_peer(cert, host, mode, now, pin)` | `cert, host, int, str, str` | Full verdict map |
+| `chain_verify_signatures(chain)` | `array` | RSA signature check per link + self-signed root |
+| `chain_verify_full(chain, host, now, pin)` | `array, str, str, str` | Linkage + signatures + leaf policy |
+| `crl_parse(der)` | `der: array` | Issuer, updates, revoked serials |
+| `crl_verify_signature(der, n, e)` | `array, array, int` | CRL RSA signature check |
+| `crl_serial_revoked(crl, serial)` | `map, str` | `1` when revoked |
 | `cert_name_eq(a, b)` | `a, b: string` | Value compare (array-safe) |
 | `chain_verify_linkage(chain, now)` | `array, str` | Name-linkage check (signatures unchecked) |
 | `ticket_issue(key, sess, master)` | `array, sess, array` | Sealed resumption ticket |

@@ -346,6 +346,7 @@ pub function parse_certificate(der) -> TlsCertificate
         return cert
     end
     cert.der_len = len(der)
+    cert.der = der
     cert.fingerprint_sha256 = der_fingerprint_sha256(der)
     let cns = collect_common_names(der)
     if len(cns) >= 1

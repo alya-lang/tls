@@ -4,6 +4,14 @@
 import "std/test"
 import "../src/lib.alya" as tls
 
+function ca_pem_fixture() -> string
+    return "-----BEGIN CERTIFICATE-----\nMIIDCTCCAfGgAwIBAgIUHrtnC3L6K2jbkjSpkXt/c7jrdVIwDQYJKoZIhvcNAQEL\nBQAwFDESMBAGA1UEAwwJdGVzdC1yb290MB4XDTI2MDkyNjIxMzQwNFoXDTI2MDky\nOTIxMzQwNFowFDESMBAGA1UEAwwJdGVzdC1yb290MIIBIjANBgkqhkiG9w0BAQEF\nAAOCAQ8AMIIBCgKCAQEArxa+QzNPWff9JLthgVdJ8JpR5FjUssxemKe8xPTROgAy\nPHW5gbnnDRWwukU0aEImug7auAom+b+cCs6kWqAdloGZ+eUy8cy7+tbL9RC3lqe/\n586vQEkKxQKNfnNEZzZe932sZbAxuwg4/0JVXYAPHugqKEmX6aMgi00GBHA+52Jt\nHmYbWqE9bEy6EwOYkMWkLtNyFL9654ZOkxw1R1LauJeJhaQ6HdspIvY9d5jY9fjk\nVKX1uTq9oJ7c4acQ8FOPcSnIc6htE/tLlAUhoa+Tk1zCFtS8Fk0ZnqudHb7StPla\nrZ6CpZMRpM1NlLRpRpG2G34cAXo8AUnvMr7F3wusYQIDAQABo1MwUTAdBgNVHQ4E\nFgQUgg9+P+d3t0bL0YBgBEnSJtNeheYwHwYDVR0jBBgwFoAUgg9+P+d3t0bL0YBg\nBEnSJtNeheYwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEADRrj\nsKM8W7fBO2wmO5jwtn9U0MoVUAz1M0lrt5vnVkLzWnPbRn+du5VUgyCikW4n1nZA\n6xfypw0bvd5OysEnd9rFGCzstjYHXTzRDJjgw1IMDNPw9q1IwNEMhHBxzNX0uQ+M\nym1kEv/LEY2W1iIYTxVJOoEGBiUJpOlBciBaOjMskJFCZ4E3oiPmGzo3g9ZumcfN\nh+sdQGKvhq/germVm7x2cCGewF5QTlRjth2SPlV1ylYcOcbMIsePidV6l2+y0FXi\nA1sh1HGROg5c7jj02sxYBc/FRHIVwkyUegdZ0rsXbNqNcjGUYBtqslTCXcUDUIzr\nUzoZ9fgbLKPEyzw6GQ==\n-----END CERTIFICATE-----\n"
+end
+
+function leaf_pem_fixture() -> string
+    return "-----BEGIN CERTIFICATE-----\nMIIDFDCCAfygAwIBAgIUbpcF/6wifnCjm5xm0Gji4/3tx5UwDQYJKoZIhvcNAQEL\nBQAwFDESMBAGA1UEAwwJdGVzdC1yb290MB4XDTI2MDkyNjIxMzQwNFoXDTI2MDky\nODIxMzQwNFowFzEVMBMGA1UEAwwMbGVhZi5leGFtcGxlMIIBIjANBgkqhkiG9w0B\nAQEFAAOCAQ8AMIIBCgKCAQEArrjVQYm14uuYCV096pRtV7FQZGbnAGhGoUx7tRpR\niyW/i5ZK0Ib1mx244O/Z7x93k6GYpRyeThtck1Kpr4ObSthO451yDR+eTE7BbVsF\nlBYqDsE+pI9nhqAc5owrIYjz5NtdFLHYnMJ+bAXrTZ68agrqaKyBJ+m2FgEhNlGm\nv0B4J0v/4XRkxImoQrkAbWE8hzbNU0n+VgoYY/6hKiq+50M2/cMffkDoPrmLe0Y0\n1dkXuK4Nr2Ld+lPhIcsqgTUvhFo0I3rXgNG6Hla2k9SjM2OL1yFOx3qtqzj8xd8q\nXhHcdfhNEzpju7vZhfm2ejhP+OZcTx9yinZ/IUV61MpEJwIDAQABo1swWTAXBgNV\nHREEEDAOggxsZWFmLmV4YW1wbGUwHQYDVR0OBBYEFAoSNfXundhPl3cnE1+CB1k7\n23jsMB8GA1UdIwQYMBaAFIIPfj/nd7dGy9GAYARJ0ibTXoXmMA0GCSqGSIb3DQEB\nCwUAA4IBAQCUN6sviIXyYpTiPRwZD3eRhAyeyrM3Yeb0GhQZ5Mnl8ngE+HsoIinU\nZCZxVJsuR55riTK851/mYq1idIGOEQIIDMkFsHSx1lJ8/jlhilH+bJvX/ntgOjQy\nnabItq0+rIDXhH9sV4kuyY3WpRskrjghHWZXXQ4CplRmvh5PYgDeQkAWny010kzo\nl/rwyEhJtGPTP3PKxW7Y4/SSEN7sYpgcJxaw+H3JM6vOeTNWrUpRotT0o0HYnu0t\na9Z4R2SNdKAxT0Acl7oHUhz0dsscQzghPW6aihbtTKF+ai7cYdR60XQqkffk68ky\nvq0mJdM+DnQHJ0ER3GXGAAPKrmCOb7uD\n-----END CERTIFICATE-----\n"
+end
+
 function cert_fixture()
     let c = tls::tls_cert_empty()
     c.subject = "CN=example"
@@ -84,6 +92,19 @@ function main()
     let stale = tls::chain_verify_linkage([leaf, root], "20310101000000Z")
     runner_assert_eq(r, stale["ok"], 0, "expired chain fails")
     runner_assert_eq(r, tls::chain_verify_linkage([], "")["ok"], 0, "empty chain fails")
+
+    # ── Full signature chain (openssl 2-level CA) ──
+    let ca = tls::parse_certificate_pem(ca_pem_fixture())
+    let leaf = tls::parse_certificate_pem(leaf_pem_fixture())
+    runner_assert_eq(r, len(ca.der) > 0, 1, "ca der retained")
+    runner_assert_eq(r, len(leaf.der) > 0, 1, "leaf der retained")
+    let sigs = tls::chain_verify_signatures([leaf, ca])
+    runner_assert_eq(r, sigs["ok"], 1, "chain signatures verify")
+    runner_assert_eq(r, sigs["checked"], 2, "both certs checked")
+    let full = tls::chain_verify_full([leaf, ca], "leaf.example", "", "")
+    runner_assert_eq(r, full["ok"], 1, "full chain verification passes")
+    let wrong_host = tls::chain_verify_full([leaf, ca], "evil.com", "", "")
+    runner_assert_eq(r, wrong_host["ok"], 0, "full verification enforces hostname")
 
     let advisory = tls::verify_peer(cert, "evil.com", tls::TlsVerifyMode.Optional, "20240101000000Z", "")
     runner_assert_eq(r, advisory["ok"], 1, "optional stays advisory on mismatch")

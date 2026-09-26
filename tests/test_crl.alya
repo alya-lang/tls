@@ -1,0 +1,48 @@
+## CRL parsing and verification tests (openssl-generated vector)
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "crypto" as crypto
+import "../src/lib.alya" as tls
+
+function crl_pem() -> string
+    return "-----BEGIN X509 CRL-----\nMIIBgzBtAgEBMA0GCSqGSIb3DQEBCwUAMBMxETAPBgNVBAMMCGNybC1yb290Fw0y\nNjA5MjYyMjE4MjhaFw0yNjEwMDMyMjE4MjhaMBUwEwICEAAXDTI2MDkyNjIyMTgy\nM1qgDzANMAsGA1UdFAQEAgIQADANBgkqhkiG9w0BAQsFAAOCAQEArxiZY+EU7xU5\nSfTq1li62cCtK8Z65ym0HzMa8BkF5B94PzYSPpyZedynAIhqUNc5Tqw89vQzRuCr\nPhzga8V5hulFZiD3l7yGitTGdCmqFiwCaQM4V5ewZmWt3j2keMn3jCTellZG1sE4\nCOyZe/TomjrT9NGlPVcVIWCseDEiUd18FaLVDlUOSjWBf2BsRLvcZ1gXCr8Jxqpr\nRdbGtFe7dUYynRSSknVOd0qno7+B7uhNDCLQVavzS0I3mI7s6G2Kxasb6ypv/xof\nLpLtu4DAzVYot2/T/jOHZ3K9v5hUKr2cMrZUPXkW0FoUIAcoHYviLgQQx3jUPcIT\n9kSo6Zc7pA==\n-----END X509 CRL-----\n"
+end
+
+function crl_ca_pem_for_crl() -> string
+    return "-----BEGIN CERTIFICATE-----\nMIIDBzCCAe+gAwIBAgIUGFMB57lbxrHoF+Ee8KNBlFSxO8gwDQYJKoZIhvcNAQEL\nBQAwEzERMA8GA1UEAwwIY3JsLXJvb3QwHhcNMjYwOTI2MjIxODAxWhcNMjYwOTI5\nMjIxODAxWjATMREwDwYDVQQDDAhjcmwtcm9vdDCCASIwDQYJKoZIhvcNAQEBBQAD\nggEPADCCAQoCggEBAMbaT6Z8IAMqLAw3nl/hXSYY66TfdJ08a6BU97RwMKE4hM/j\nQgfvp2/BX2l+t0PzsIUhvbXQTzwU4B+/aSugv9iVOlI3L5Gs1tTfiXvcF1q90oab\na7M2tj6gKebrfjm25Mihf7qAcH1q2/W5pmfbvKUu0hE3Zwse82xboUxFHa+EFVVZ\nZiEsCHJrXGVZehBhE/YcV5xNikTcTAWe0XbcyGY/eiB+LBtZR24aUu49o8zWPGzh\nVn5rwwDLxsLcLDRwOepXsMh5/W8DoG3XGOy2Mr6FsPhuQHsPFtrtySnU/I5ubuzJ\ntcY0KkcGLB79MOB+vwnVOB6HfF09aW5fccRUs0sCAwEAAaNTMFEwHQYDVR0OBBYE\nFBINGFIhMAK4R/8iZnRP6ag9JII2MB8GA1UdIwQYMBaAFBINGFIhMAK4R/8iZnRP\n6ag9JII2MA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAC9tDf6S\nIg1/2oiJn+gOar0Vr5SUviy3jxWdjoNwH2Yh+WLeK/uVa2g5BIvJ8L2P+5lVajh1\n1/vW+q1jyJA+sdHvknvXy0cIFBB7HbZS3TWg+HMv8Dh78+I8g6bwjyyRCC6UiRZJ\nd4GYm31nyS5ba4ve7CrQflWGHYc41694zGpk0v7DmnPmETg5yZM3ztfyXb09cS4s\nG/higoW/oUI21kbndGkUl+jPdM4WxAM55XG6yHXw7y2lzt3aKo/sUoy9Rqn9k+Zq\ne6A2pykNiEFYyugXz4SUeP7lFQ24nXoS/KtO3xrddwSinhSo8pzG6MDlWd5FtHW7\nERjvqntrnu/TJVs=\n-----END CERTIFICATE-----\n"
+end
+
+function main()
+    test_suite("TLS CRL Tests")
+    let r = runner_new()
+
+    let der = tls::pem_to_der(crl_pem(), "X509 CRL")
+    runner_assert_true(r, len(der) > 0, "crl pem decodes")
+    let crl = tls::crl_parse(der)
+    runner_assert_str_eq(r, crl["error"], "", "crl parses clean")
+    runner_assert_str_eq(r, crl["issuer_cn"], "crl-root", "crl issuer cn")
+    runner_assert_true(r, len(crl["this_update"]) > 0, "thisUpdate present")
+    runner_assert_true(r, len(crl["next_update"]) > 0, "nextUpdate present")
+    runner_assert_eq(r, len(crl["revoked"]), 1, "one revoked serial")
+    runner_assert_str_eq(r, crl["revoked"][0], "1000", "revoked serial 1000")
+
+    let ca = tls::parse_certificate_pem(crl_ca_pem_for_crl())
+    let cak = crypto::rsa_parse_pubkey(ca.der)
+    runner_assert_str_eq(r, cak["error"], "", "crl issuer key parses")
+    runner_assert_eq(r, tls::crl_verify_signature(der, cak["n"], cak["e"]), 1, "crl signature verifies")
+    runner_assert_eq(r, tls::crl_serial_revoked(crl, "1000"), 1, "serial 1000 revoked")
+    runner_assert_eq(r, tls::crl_serial_revoked(crl, "10:00"), 1, "serial pin format-insensitive")
+    runner_assert_eq(r, tls::crl_serial_revoked(crl, "9999"), 0, "serial 9999 clean")
+    runner_assert_eq(r, tls::crl_serial_revoked(crl, ""), 0, "empty serial safe")
+
+    let bad = tls::crl_parse([48, 1, 2])
+    runner_assert_true(r, bad["error"] != "", "malformed crl reports error")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

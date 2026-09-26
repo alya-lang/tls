@@ -5,6 +5,7 @@
 ## Fingerprint comparisons use constant-time native equality.
 
 import "std/str"
+import "crypto" as crypto
 import "../types.alya"
 import "../ffi.alya"
 import "./pem.alya"
@@ -219,6 +220,81 @@ pub function chain_verify_linkage(chain, now_stamp: string = "") -> map
         return { "ok": 0, "length": len(chain), "detail": "root outside validity window" }
     end
     return { "ok": 1, "length": len(chain), "detail": "chain linkage verified (signatures unchecked)" }
+end
+
+## Verifies RSA signatures across an ordered leaf-to-root chain.
+##
+## Each certificate's signature is checked against its parent public key;
+## the root must be self-signed (no external trust store exists yet, so
+## unknown roots fail closed). Non-RSA issuers report as unsupported —
+## ECDSA path validation is a tracked extension.
+##
+## ### Parameters
+## - `chain`: Ordered certificate array (leaf first, DER retained).
+##
+## ### Returns
+## Map with `ok`, `checked`, and `detail` fields.
+pub function chain_verify_signatures(chain) -> map
+    if chain is null or len(chain) == 0
+        return { "ok": 0, "checked": 0, "detail": "empty chain" }
+    end
+    let i = 0
+    while i < len(chain)
+        if len(chain[i].der) == 0
+            return { "ok": 0, "checked": i, "detail": "certificate DER missing at position " + str(i) }
+        end
+        i += 1
+    end
+    i = 0
+    while i + 1 < len(chain)
+        let parent_key = crypto::rsa_parse_pubkey(chain[i + 1].der)
+        if parent_key["error"] != ""
+            return { "ok": 0, "checked": i, "detail": "non-RSA issuer at position " + str(i + 1) + " (ECDSA unsupported)" }
+        end
+        if crypto::rsa_verify_cert(chain[i].der, parent_key["n"], parent_key["e"]) == 0
+            return { "ok": 0, "checked": i, "detail": "signature invalid at position " + str(i) }
+        end
+        i += 1
+    end
+    let root = chain[len(chain) - 1]
+    let root_key = crypto::rsa_parse_pubkey(root.der)
+    if root_key["error"] != ""
+        return { "ok": 0, "checked": i, "detail": "non-RSA root (ECDSA unsupported)" }
+    end
+    if cert_name_eq(root.subject, root.issuer) == 0 and cert_name_eq(root.subject_cn, root.issuer_cn) == 0
+        return { "ok": 0, "checked": i, "detail": "root is not self-signed (no trust store)" }
+    end
+    if crypto::rsa_verify_cert(root.der, root_key["n"], root_key["e"]) == 0
+        return { "ok": 0, "checked": i, "detail": "root self-signature invalid" }
+    end
+    return { "ok": 1, "checked": len(chain), "detail": "all signatures verified" }
+end
+
+## Runs the full verification stack on a chain: linkage, signatures,
+## leaf hostname, validity, and optional pinning.
+##
+## ### Parameters
+## - `chain`: Ordered certificate array (leaf first).
+## - `hostname`: Expected leaf hostname.
+## - `now_stamp`: Reference stamp (`""` skips time).
+## - `pinned_fp`: Optional leaf fingerprint pin (`""` disables).
+##
+## ### Returns
+## Map with `ok` and stage results (`link`, `sigs`, `peer` maps).
+pub function chain_verify_full(chain, hostname: string, now_stamp: string = "", pinned_fp: string = "") -> map
+    let link = chain_verify_linkage(chain, now_stamp)
+    if link["ok"] == 0
+        return { "ok": 0, "link": link, "sigs": null, "peer": null }
+    end
+    let sigs = chain_verify_signatures(chain)
+    if sigs["ok"] == 0
+        return { "ok": 0, "link": link, "sigs": sigs, "peer": null }
+    end
+    let peer = verify_peer(chain[0], hostname, TlsVerifyMode.Required, now_stamp, pinned_fp)
+    if peer["ok"] == 0
+        return { "ok": 0, "link": link, "sigs": sigs, "peer": peer }
+    end
+    return { "ok": 1, "link": link, "sigs": sigs, "peer": peer }
 end
 
 ## Runs hostname, time, and optional pinning checks per verify mode.
