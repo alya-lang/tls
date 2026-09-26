@@ -82,3 +82,36 @@ int alya_tls_is_aead(int suite) {
             return 0;
     }
 }
+
+int alya_tls_sock_send(int sock, const unsigned char *buf, int len) {
+    int total = 0;
+    if (sock < 0 || buf == NULL || len <= 0) {
+        return -1;
+    }
+    while (total < len) {
+#ifdef _WIN32
+        int n = send(sock, (const char *)buf + total, len - total, 0);
+#else
+        ssize_t n = send(sock, buf + total, (size_t)(len - total), 0);
+#endif
+        if (n <= 0) {
+            return (total > 0) ? total : -1;
+        }
+        total += n;
+    }
+    return total;
+}
+
+int alya_tls_sock_recv(int sock, unsigned char *buf, int max_len) {
+    if (sock < 0 || buf == NULL || max_len <= 0) {
+        return -1;
+    }
+#ifdef _WIN32
+    return recv(sock, (char *)buf, max_len, 0);
+#else
+    {
+        ssize_t n = recv(sock, buf, (size_t)max_len, 0);
+        return (int)n;
+    }
+#endif
+}

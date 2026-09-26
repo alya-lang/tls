@@ -60,6 +60,24 @@ function main()
     let fin = tls::finished_verify_data([9, 9, 9], "client finished", tx)
     runner_assert_eq(r, len(fin), 12, "verify data 12 bytes")
 
+    runner_assert_str_eq(r, tls::alpn_select(["h2", "http/1.1"], ["http/1.1"]), "http/1.1", "alpn server order with overlap")
+    runner_assert_str_eq(r, tls::alpn_select(["h2"], ["http/1.1"]), "", "alpn no overlap empty")
+    runner_assert_str_eq(r, tls::alpn_select(null, ["h2"]), "", "alpn null safe")
+
+    let fixed_rand = []
+    let f = 0
+    while f < 32
+        fixed_rand.push(f)
+        f += 1
+    end
+    let sh_built = tls::build_server_hello(771, 4867, fixed_rand, "aabb")
+    runner_assert_eq(r, sh_built["version"], 771, "built hello version")
+    runner_assert_eq(r, sh_built["bytes"][0], 22, "built hello is handshake record")
+    let sh_rt = tls::parse_server_hello(sh_built["body"])
+    runner_assert_str_eq(r, sh_rt["error"], "", "built hello roundtrips")
+    runner_assert_eq(r, sh_rt["cipher_suite"], 4867, "roundtrip suite")
+    runner_assert_str_eq(r, sh_rt["session_id"], "aabb", "roundtrip session id")
+
     let failed = runner_summary(r)
     if failed > 0
         exit(1)

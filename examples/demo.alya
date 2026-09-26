@@ -91,9 +91,14 @@ function main()
     let sess = tls::tls_mock_establish(cfg)
     say "Session:       " + tls::session_summary(sess.session)
     let frames = tls::tls_wrap_app_data(sess, [72, 105])
-    say "App frames:    " + str(len(frames))
+    say "App frames:    " + str(len(frames)) + " (binary record bytes)"
+    let alert = tls::tls_alert_bytes(tls::TlsAlertLevel.Warning, tls::TlsAlertDescription.CloseNotify, tls::TlsVersion.Tls12)
+    say "Alert bytes:   " + str(len(alert))
     let srv = tls::server(8443)
     tls::tls_server_enable_tls(srv, "CERT", "KEY", 0)
+    tls::tls_server_set_ciphers(srv, tls::cipher_default_suites())
+    let nego = tls::tls_server_negotiate(srv, tls::cipher_default_suites(), ["h2"])
+    say "Negotiated:    " + tls::cipher_suite_name(nego["suite"]) + " / alpn=" + nego["alpn"]
     say "Server ident:  " + str(tls::tls_server_has_identity(srv))
     tls::tls_server_close(srv)
     say ""

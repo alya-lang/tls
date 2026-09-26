@@ -1,0 +1,100 @@
+## Binary-safe socket I/O over explicit-length native buffers.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Alya strings cannot hold NUL bytes, so every TLS record crosses the
+## socket here as a byte array through the bundled C engine instead of
+## `std/net` string calls. Text-only payloads may keep using `std/net`.
+
+import "../ffi.alya"
+
+## Copies a byte array into native memory for FFI handoff.
+##
+## ### Parameters
+## - `data`: Byte array (may be null).
+##
+## ### Returns
+## Map with `ptr` and `len` fields (null input yields len 0).
+pub function bytes_prepare(data) -> map
+    if data is null or len(data) == 0
+        return { "ptr": 0, "len": 0 }
+    end
+    let p = alloc(len(data))
+    let i = 0
+    while i < len(data)
+        poke_byte(p, i, data[i])
+        i += 1
+    end
+    return { "ptr": p, "len": len(data) }
+end
+
+## Releases a buffer created by `bytes_prepare`.
+##
+## ### Parameters
+## - `prep`: Map returned by `bytes_prepare`.
+pub function bytes_release(prep)
+    if prep["len"] > 0
+        free(prep["ptr"])
+    end
+end
+
+## Copies a native byte buffer into an Alya byte array.
+##
+## ### Parameters
+## - `ptr`: Native buffer pointer.
+## - `len`: Number of bytes to copy.
+##
+## ### Returns
+## Array of byte integers `[0..255]`.
+pub function ptr_to_bytes(ptr, len: int) -> array
+    let res = []
+    let i = 0
+    while i < len
+        res.push(peek_byte(ptr, i))
+        i += 1
+    end
+    return res
+end
+
+## Sends a full byte array over a socket (NUL-safe).
+##
+## ### Parameters
+## - `sock`: Connected socket handle.
+## - `data`: Byte array payload.
+##
+## ### Returns
+## Bytes sent, or -1 on invalid input or socket error.
+pub function raw_send(sock: int, data) -> int
+    if sock < 0 or data is null or len(data) == 0
+        return -1
+    end
+    let prep = bytes_prepare(data)
+    let rc = alya_tls_sock_send(sock, prep["ptr"], prep["len"])
+    bytes_release(prep)
+    return rc
+end
+
+## Receives up to `max_len` bytes from a socket (NUL-safe).
+##
+## ### Parameters
+## - `sock`: Connected socket handle.
+## - `max_len`: Read cap. Defaults to `4096`.
+##
+## ### Returns
+## Byte array (empty on close, error, or invalid input).
+pub function raw_recv(sock: int, max_len: int = 4096) -> array
+    let out = []
+    if sock < 0
+        return out
+    end
+    let cap = max_len
+    if cap <= 0
+        cap = 4096
+    end
+    let buf = alloc(cap)
+    let n = alya_tls_sock_recv(sock, buf, cap)
+    if n > 0
+        out = ptr_to_bytes(buf, n)
+    end
+    free(buf)
+    return out
+end

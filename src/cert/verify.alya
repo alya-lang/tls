@@ -141,7 +141,9 @@ end
 ## Runs hostname, time, and optional pinning checks per verify mode.
 ##
 ## - `Required`: hostname and time must pass; pinning applies when given.
-## - `Optional`: checks run but failures still report (never throw).
+##   Failures report `ok = 0` for the caller to enforce.
+## - `Optional`: advisory only — component results are reported but `ok`
+##   is always `1` (callers decide; the handshake must not abort).
 ## - `None`: always reports success with a note.
 ##
 ## ### Parameters
@@ -175,6 +177,9 @@ pub function verify_peer(cert: TlsCertificate, hostname: string, verify_mode: in
     end
     if pin_ok == 0
         detail = detail + "fingerprint pin mismatch; "
+    end
+    if verify_mode == TlsVerifyMode.Optional
+        return { "ok": 1, "host_ok": host_ok, "time_ok": time_ok, "pin_ok": pin_ok, "detail": "advisory: " + trim(detail) }
     end
     return { "ok": 0, "host_ok": host_ok, "time_ok": time_ok, "pin_ok": pin_ok, "detail": trim(detail) }
 end

@@ -3,6 +3,7 @@
 
 import "./types.alya"
 import "./ffi.alya"
+import "./io/raw.alya"
 import "./core/version.alya"
 import "./core/cipher.alya"
 import "./core/record.alya"

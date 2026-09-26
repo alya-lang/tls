@@ -54,6 +54,17 @@ function main()
     runner_assert_str_eq(r, tls::record_type_name(23), "application_data", "type name")
     runner_assert_str_eq(r, tls::record_type_name(77), "unknown", "unknown type name")
 
+    let alert = tls::tls_alert_bytes(tls::TlsAlertLevel.Warning, tls::TlsAlertDescription.CloseNotify, tls::TlsVersion.Tls12)
+    runner_assert_eq(r, len(alert), 7, "alert 5 header + 2 payload")
+    runner_assert_eq(r, alert[0], 21, "alert record type byte")
+    runner_assert_eq(r, alert[5], 1, "alert level byte kept (NUL-safe)")
+    runner_assert_eq(r, alert[6], 0, "alert desc byte kept (NUL-safe)")
+    let alert_rec = tls::record_decode(alert)
+    runner_assert_str_eq(r, alert_rec["error"], "", "alert decodes clean")
+    runner_assert_eq(r, alert_rec["type"], 21, "alert content type")
+    runner_assert_eq(r, alert_rec["fragment"][0], 1, "alert level warning")
+    runner_assert_eq(r, alert_rec["fragment"][1], 0, "alert close_notify")
+
     let failed = runner_summary(r)
     if failed > 0
         exit(1)

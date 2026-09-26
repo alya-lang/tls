@@ -1,6 +1,13 @@
 #ifndef ALYA_TLS_H
 #define ALYA_TLS_H
 
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/types.h>
+#include <sys/socket.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -23,6 +30,14 @@ int alya_tls_cipher_strength(int suite);
 
 /* Returns 1 when the suite is AEAD-based, 0 otherwise. */
 int alya_tls_is_aead(int suite);
+
+/* Binary-safe socket send with explicit length (NUL-safe, unlike strings).
+ * Sends the full buffer unless the peer closes. Returns bytes sent or -1. */
+int alya_tls_sock_send(int sock, const unsigned char *buf, int len);
+
+/* Binary-safe socket receive into a caller buffer.
+ * Returns bytes received, 0 on orderly close, or -1 on error. */
+int alya_tls_sock_recv(int sock, unsigned char *buf, int max_len);
 
 #ifdef __cplusplus
 }

@@ -7,4 +7,6 @@ extern "C" from "tls"
     function alya_tls_version_compare(a_code: i32, b_code: i32) -> i32
     function alya_tls_cipher_strength(suite: i32) -> i32
     function alya_tls_is_aead(suite: i32) -> i32
+    function alya_tls_sock_send(sock: i32, buf: ptr, len: i32) -> i32
+    function alya_tls_sock_recv(sock: i32, buf: ptr, max_len: i32) -> i32
 end

@@ -17,6 +17,10 @@ function main()
 
     let frames = tls::tls_wrap_app_data(mock, [72, 105])
     runner_assert_eq(r, len(frames), 1, "one app-data frame")
+    runner_assert_eq(r, frames[0][0], 23, "frame is application_data")
+    runner_assert_eq(r, len(frames[0]), 7, "frame 5 header + 2 payload")
+    runner_assert_eq(r, tls::raw_send(-1, [1, 2]), -1, "raw send bad sock")
+    runner_assert_eq(r, len(tls::raw_recv(-1, 100)), 0, "raw recv bad sock empty")
     let closed = tls::tls_context_new(cfg)
     runner_assert_eq(r, len(tls::tls_wrap_app_data(closed, [1])), 0, "no frames before establish")
 
@@ -45,6 +49,40 @@ function main()
     runner_assert_eq(r, srv.running, 1, "server running flag")
     tls::tls_server_close(srv)
     runner_assert_eq(r, srv.running, 0, "server stopped after close")
+
+    tls::tls_server_set_ciphers(srv, [4867])
+    tls::tls_server_set_alpn(srv, ["h2"])
+    let nego = tls::tls_server_negotiate(srv, [156, 4867], ["http/1.1", "h2"])
+    runner_assert_str_eq(r, nego["error"], "", "negotiation clean")
+    runner_assert_eq(r, nego["suite"], 4867, "server allowlist filters to chacha")
+    runner_assert_str_eq(r, nego["alpn"], "h2", "server alpn preferred")
+    let no_overlap = tls::tls_server_negotiate(srv, [156], ["h2"])
+    runner_assert_eq(r, no_overlap["suite"], 0, "no overlap suite zero")
+    runner_assert_true(r, no_overlap["error"] != "", "no overlap reports error")
+
+    let vcert = tls::tls_cert_empty()
+    vcert.subject_cn = "example.com"
+    vcert.san = ["example.com"]
+    vcert.not_before = "20230101000000Z"
+    vcert.not_after = "20300101000000Z"
+    vcert.fingerprint_sha256 = "abcd"
+    let vctx = tls::tls_mock_establish(tls::config("example.com"))
+    let verdict = tls::tls_verify_session(vctx, vcert, "20260101000000Z", "")
+    runner_assert_eq(r, verdict["ok"], 1, "session verification passes")
+    runner_assert_str_eq(r, vctx.session.peer_fingerprint, "abcd", "fingerprint recorded")
+    let badctx = tls::tls_mock_establish(tls::config("example.com"))
+    let badverdict = tls::tls_verify_session(badctx, vcert, "20310101000000Z", "")
+    runner_assert_eq(r, badverdict["ok"], 0, "expired peer fails required")
+    runner_assert_eq(r, badctx.state, tls::TlsState.Failed, "failed context state")
+    let nocert = tls::tls_mock_establish(tls::config("example.com"))
+    runner_assert_eq(r, tls::tls_verify_session(nocert, null)["ok"], 0, "missing cert fails required")
+
+    let mtls = tls::server(18444, "127.0.0.1")
+    tls::tls_server_enable_tls(mtls, "CERT", "KEY", 1)
+    let mctx = tls::tls_context_new(tls::config("client.example"))
+    let mverdict = tls::tls_server_verify_client(mtls, mctx, null)
+    runner_assert_eq(r, mverdict["ok"], 0, "mtls rejects missing client cert")
+    runner_assert_eq(r, mctx.state, tls::TlsState.Failed, "mtls failure recorded")
 
     let failed = runner_summary(r)
     if failed > 0

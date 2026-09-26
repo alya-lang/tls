@@ -95,7 +95,7 @@ pub function version_parse(label: string) -> int
         return TlsVersion.Tls10
     end
     if l == "tlsv1.1" or l == "tls1.1" or l == "1.1" or l == "v1.1"
-        return TlsVersion.Tls12 - 1
+        return TlsVersion.Tls11
     end
     if l == "tlsv1.2" or l == "tls1.2" or l == "1.2" or l == "v1.2"
         return TlsVersion.Tls12

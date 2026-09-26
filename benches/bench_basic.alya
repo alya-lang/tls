@@ -76,6 +76,26 @@ function main()
     end
     bench_stop(runner, "prf_sha256() 32B 2k calls")
 
+    # Bench 8: server negotiation — 50k iterations
+    let allow = tls::cipher_default_suites()
+    bench_start(runner, 50000)
+    let q = 0
+    while q < 50000
+        tls::cipher_select(allow, allow)
+        tls::alpn_select(["h2", "http/1.1"], ["http/1.1"])
+        q += 1
+    end
+    bench_stop(runner, "negotiate suite+alpn 50k calls")
+
+    # Bench 9: alert record build — 200k iterations
+    bench_start(runner, 200000)
+    let t = 0
+    while t < 200000
+        tls::tls_alert_bytes(tls::TlsAlertLevel.Warning, tls::TlsAlertDescription.CloseNotify, tls::TlsVersion.Tls12)
+        t += 1
+    end
+    bench_stop(runner, "tls_alert_bytes() 200k calls")
+
     bench_summary(runner)
 end
 

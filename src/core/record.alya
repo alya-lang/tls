@@ -48,11 +48,15 @@ end
 
 ## Converts a byte array into a single-byte wire string.
 ##
+## TEXT-SAFE ONLY: Alya strings cannot hold NUL bytes, so any payload with
+## zero bytes is silently truncated. Use byte arrays with `io/raw.alya`
+## for all binary transport.
+##
 ## ### Parameters
 ## - `data`: Byte array.
 ##
 ## ### Returns
-## Wire string of equal length.
+## Wire string of equal length (for NUL-free input).
 pub function bytes_to_wire(data) -> string
     let out = ""
     if data is null
@@ -67,6 +71,9 @@ pub function bytes_to_wire(data) -> string
 end
 
 ## Converts a wire string back into a byte array.
+##
+## TEXT-SAFE ONLY: see `bytes_to_wire`. Binary records must travel as
+## byte arrays end to end.
 ##
 ## ### Parameters
 ## - `wire`: Wire string.
@@ -87,6 +94,9 @@ pub function wire_to_bytes(wire: string) -> array
 end
 
 ## Frames one record: 5-byte header plus fragment.
+##
+## Unknown versions clamp to TLS 1.2 for the record header; the handshake
+## payload still carries the real negotiated version.
 ##
 ## ### Parameters
 ## - `content_type`: `TlsContentType` code.
@@ -116,7 +126,7 @@ pub function record_encode(content_type: int, version: int, fragment) -> map
         bytes.push(body[j])
         j += 1
     end
-    return { "type": content_type, "version": ver, "length": len(body), "bytes": bytes, "wire": bytes_to_wire(bytes) }
+    return { "type": content_type, "version": ver, "length": len(body), "bytes": bytes }
 end
 
 ## Parses and validates one record from the front of a byte buffer.
@@ -208,4 +218,21 @@ pub function record_type_name(ctype: int) -> string
         return "application_data"
     end
     return "unknown"
+end
+
+## Builds a two-byte alert record as binary.
+##
+## Returns bytes (not a string) because alert payloads routinely contain
+## NUL bytes, which Alya strings cannot hold.
+##
+## ### Parameters
+## - `level`: `TlsAlertLevel` code (warning or fatal).
+## - `description`: `TlsAlertDescription` code.
+## - `version`: Record version code. Defaults to TLS 1.2.
+##
+## ### Returns
+## 7-byte alert record array ready for `raw_send`.
+pub function tls_alert_bytes(level: int, description: int, version: int = TlsVersion.Tls12) -> array
+    let rec = record_encode(TlsContentType.Alert, version, [level, description])
+    return rec["bytes"]
 end

@@ -177,7 +177,7 @@ pub function build_client_hello(config, suites = null) -> map
         h += 1
     end
     let rec = record_encode(TlsContentType.Handshake, TlsVersion.Tls10, hello)
-    return { "random": rnd, "suites": prefs, "sni": config.sni, "version": offered, "body": body, "bytes": rec["bytes"], "wire": rec["wire"] }
+    return { "random": rnd, "suites": prefs, "sni": config.sni, "version": offered, "body": body, "bytes": rec["bytes"] }
 end
 
 ## Parses a ServerHello body (without record/handshake headers).
@@ -323,4 +323,123 @@ pub function transcript_hash(transcript) -> array
         data = []
     end
     return crypto::sha256_bytes(data)
+end
+
+## Selects the first server-preferred protocol the client also offers.
+##
+## Element comparison normalizes through concatenation: plain `==` on two
+## array-derived strings mis-evaluates inside function scope (compiler
+## issue, see `alpn_str_eq`), so both sides are rebuilt first.
+##
+## ### Parameters
+## - `server_protos`: Server preference array (may be null).
+## - `client_protos`: Client offer array (may be null).
+##
+## ### Returns
+## Selected protocol string, or empty when there is no overlap.
+pub function alpn_select(server_protos, client_protos) -> string
+    if server_protos is null or client_protos is null
+        return ""
+    end
+    let i = 0
+    while i < len(server_protos)
+        let cand = server_protos[i]
+        let j = 0
+        while j < len(client_protos)
+            if alpn_str_eq(client_protos[j], cand) == 1
+                return cand
+            end
+            j += 1
+        end
+        i += 1
+    end
+    return ""
+end
+
+# Compares two strings by value, normalizing array-derived operands.
+function alpn_str_eq(a: string, b: string) -> int
+    if (a + "") == (b + "")
+        return 1
+    end
+    return 0
+end
+
+## Builds a ServerHello record answering a ClientHello.
+##
+## Pairs with `parse_server_hello`: the produced body roundtrips through
+## the parser, which server tests assert without network I/O.
+##
+## ### Parameters
+## - `version`: Negotiated version code.
+## - `cipher_suite`: Selected cipher suite id.
+## - `random`: 32-byte server random (null generates a fresh one).
+## - `session_id_hex`: Session id as hex string (empty means no session).
+##
+## ### Returns
+## Map with `version`, `cipher_suite`, `random`, `session_id`, `body`,
+## `bytes`, and `wire` fields.
+pub function build_server_hello(version: int, cipher_suite: int, random = null, session_id_hex: string = "") -> map
+    let ver = version
+    if version_is_supported(ver) == 0
+        ver = TlsVersion.Tls12
+    end
+    let rnd = random
+    if rnd is null or len(rnd) != 32
+        rnd = hello_random()
+    end
+    let sid = []
+    if session_id_hex is not null and session_id_hex != ""
+        sid = crypto::hex_to_bytes(session_id_hex)
+    end
+    if len(sid) > 32
+        sid = slice_bytes(sid, 0, 32)
+    end
+    let ver_bytes = u16_to_bytes(ver)
+    let body = [ver_bytes[0], ver_bytes[1]]
+    let r = 0
+    while r < len(rnd)
+        body.push(rnd[r])
+        r += 1
+    end
+    body.push(len(sid))
+    let k = 0
+    while k < len(sid)
+        body.push(sid[k])
+        k += 1
+    end
+    let suite_bytes = u16_to_bytes(cipher_suite)
+    body.push(suite_bytes[0])
+    body.push(suite_bytes[1])
+    body.push(0)
+    let hs_len = len(body)
+    let hello = [TlsHandshakeType.ServerHello, bit_and(bit_shr(hs_len, 16), 255), bit_and(bit_shr(hs_len, 8), 255), bit_and(hs_len, 255)]
+    let h = 0
+    while h < len(body)
+        hello.push(body[h])
+        h += 1
+    end
+    let rec = record_encode(TlsContentType.Handshake, TlsVersion.Tls10, hello)
+    return { "version": ver, "cipher_suite": cipher_suite, "random": rnd, "session_id": crypto::bytes_to_hex(sid), "body": body, "bytes": rec["bytes"] }
+end
+
+## Copies `n` bytes starting at `offset` from a byte array.
+##
+## ### Parameters
+## - `data`: Source byte array.
+## - `offset`: Start position.
+## - `n`: Number of bytes to copy.
+##
+## ### Returns
+## Sliced byte array.
+pub function slice_bytes(data, offset: int, n: int) -> array
+    let part = []
+    if data is null or n <= 0
+        return part
+    end
+    let i = 0
+    while i < n and offset + i < len(data)
+        part.push(data[offset + i])
+        i += 1
+    end
+    return part
 end

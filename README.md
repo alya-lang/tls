@@ -15,8 +15,9 @@ Native TLS and SSL client, server, certificate verification and secure networkin
 - ✅ **Certificate Verification**: RFC 6125 hostname matching (SAN-first, single-label wildcards), validity-window checks, SHA-256 fingerprint pinning, and `Required/Optional/None` policy modes
 - 📜 **X.509 & PEM Tooling**: RFC 7468 armor parsing, DER extraction, minimal field scanner (CN, SAN, validity, serial), plus a real openssl-generated certificate vector in tests
 - 🤝 **Handshake & Key Schedule**: Structurally valid ClientHello builder (SNI + ALPN extensions), ServerHello parser, TLS 1.2 PRF/master-secret/key-block, TLS 1.3 HKDF-Expand-Label, and Finished verify data
-- 🧱 **Record Layer**: RFC 8446 framing (encode/decode/validate), 16k fragmentation, and ApplicationData wrapping for established sessions
-- ⚡ **Native C Engine**: Constant-time string comparison (anti-timing-attack), version-code ordering, and shared cipher-strength policy via zero-dependency FFI
+- 🧱 **Record Layer**: RFC 8446 framing (encode/decode/validate), 16k fragmentation, ApplicationData wrapping, and alert record builders
+- ⚡ **Native C Engine**: Constant-time string comparison (anti-timing-attack), version-code ordering, shared cipher-strength policy, and **binary-safe socket send/receive** (explicit-length buffers, NUL-safe) via zero-dependency FFI
+- 🔌 **Binary-First I/O**: Alya strings cannot hold NUL bytes, so every record crosses the socket as a byte array through `io/raw.alya` — string helpers are marked text-safe-only
 - 🛡️ **Crypto-Backed**: Randoms, HMAC-SHA256, HKDF, SHA-256 fingerprints, and Base64 DER decoding on top of `alya-lang/crypto`
 
 ---
@@ -33,6 +34,8 @@ tls/
 │   ├── lib.alya            # Public API facade & high-level constructors
 │   ├── types.alya          # TlsConfig, TlsCertificate, TlsSession, TlsContext
 │   ├── ffi.alya            # Native extern "C" declarations
+│   ├── io/
+│   │   └── raw.alya        # Binary-safe socket send/receive (NUL-safe)
 │   ├── core/
 │   │   ├── version.alya    # Version codes, labels, negotiation
 │   │   ├── cipher.alya     # Suite registry, strength, selection
@@ -66,7 +69,10 @@ tls/
 ```
 
 > [!NOTE]
-> **Scope:** `v0.1.0` negotiates versions/suites over real TCP and verifies caller-supplied chains. Server-side key exchange and bulk record encryption build on `core/keys.alya` + `crypto` AEAD in the next milestone — the handshake stub never claims encryption it does not perform.
+> **Scope:** `v0.1.0` negotiates versions/suites over real TCP through binary-safe I/O, verifies caller-supplied chains with mode enforcement, and shuts down cleanly with `close_notify`. Remaining: automatic `Certificate`-message chain parsing, server-side key exchange, bulk record encryption (needs AES-GCM in `crypto`), chain building, revocation, and session resumption — the handshake stub never claims encryption it does not perform.
+>
+> [!NOTE]
+> **String limitation:** Alya strings cannot hold NUL bytes, so `bytes_to_wire`/`wire_to_bytes` are text-safe-only helpers. All record transport uses byte arrays with `io/raw.alya` (`raw_send`/`raw_recv`).
 
 ---
 
@@ -150,9 +156,14 @@ main()
 |---|---|---|
 | `config(host, port)` | `host: string, port: int` | Secure client config (TLS 1.2+, verification required) |
 | `insecure_config(host, port)` | `host: string, port: int` | Dev config without verification (never production) |
-| `connect(cfg)` | `cfg: TlsConfig` | TCP dial + hello negotiation, never throws |
-| `close(ctx)` | `ctx: TlsContext` | Closes tunnel socket |
+| `connect(cfg)` | `cfg: TlsConfig` | TCP dial + binary hello negotiation, never throws |
+| `close(ctx)` | `ctx: TlsContext` | Sends `close_notify` (best effort), closes socket |
+| `tls_verify_session(ctx, cert, now, pin)` | `ctx, cert, str, str` | Enforces verification mode, records fingerprint |
+| `tls_send_data(ctx, bytes)` | `ctx, array` | NUL-safe binary send |
+| `tls_recv_data(ctx, max)` | `ctx, int` | NUL-safe binary receive |
 | `server(port, host)` | `port: int, host: string` | Creates TLS server listener |
+| `tls_server_negotiate(srv, suites, alpn)` | `srv, array, array` | Server-side suite + ALPN selection |
+| `tls_server_verify_client(srv, ctx, cert, now, pin)` | `srv, ctx, cert, str, str` | Mutual-TLS client verification |
 | `version()` | — | Package version string |
 | `secure_compare(a, b)` | `a, b: string` | Constant-time compare via native engine |
 | `session_summary(sess)` | `sess: TlsSession` | One-line version/suite/SNI summary |
@@ -172,10 +183,13 @@ main()
 
 | Function | Parameters | Description |
 |---|---|---|
-| `record_encode(type, ver, frag)` | `int, int, array` | Frames one TLS record |
+| `record_encode(type, ver, frag)` | `int, int, array` | Frames one TLS record (binary bytes) |
 | `record_decode(data)` | `data: array` | Parses/validates one record |
-| `build_client_hello(cfg, suites)` | `cfg, array` | ClientHello with SNI/ALPN |
+| `tls_alert_bytes(level, desc, ver)` | `int, int, int` | 7-byte alert record for `raw_send` |
+| `build_client_hello(cfg, suites)` | `cfg, array` | ClientHello with SNI/ALPN (binary bytes) |
 | `parse_server_hello(body)` | `body: array` | Extracts version/random/suite |
+| `build_server_hello(ver, suite, rnd, sid)` | `int, int, array, str` | ServerHello answering a ClientHello |
+| `alpn_select(server, client)` | `array, array` | First overlapping protocol |
 | `master_secret(pre, cli, srv)` | `array, array, array` | 48-byte TLS 1.2 master secret |
 | `key_block(master, srv, cli, len)` | `array, array, array, int` | Key expansion material |
 | `hkdf_expand_label(secret, label, ctx, len)` | `array, str, array, int` | TLS 1.3 key schedule step |

@@ -12,6 +12,8 @@ import "../core/version.alya"
 import "../core/cipher.alya"
 import "../core/record.alya"
 import "../core/handshake.alya"
+import "../cert/verify.alya"
+import "../io/raw.alya"
 
 ## Builds a client configuration alias with secure defaults.
 ##
@@ -55,16 +57,23 @@ pub function tls_connect(config: TlsConfig) -> TlsContext
     ctx.sock = sock
     ctx.state = TlsState.TcpConnected
     let hello = build_client_hello(config)
-    net::tcp_send(sock, hello["wire"])
+    let sent = raw_send(sock, hello["bytes"])
+    if sent < 0
+        return ctx.fail("failed to send ClientHello")
+    end
     ctx.state = TlsState.HandshakeStarted
-    let raw = ""
+    let raw = []
     let tries = 0
     while tries < 8
-        let chunk = net::tcp_recv(sock, 4096)
-        if chunk == "" or len(chunk) == 0
+        let chunk = raw_recv(sock, 4096)
+        if len(chunk) == 0
             break
         end
-        raw = raw + chunk
+        let c = 0
+        while c < len(chunk)
+            raw.push(chunk[c])
+            c += 1
+        end
         if len(raw) >= 5
             break
         end
@@ -73,7 +82,7 @@ pub function tls_connect(config: TlsConfig) -> TlsContext
     if len(raw) < 5
         return ctx.fail("no ServerHello received (peer may not speak TLS)")
     end
-    let rec = record_decode(wire_to_bytes(raw))
+    let rec = record_decode(raw)
     if rec["error"] != ""
         return ctx.fail("ServerHello record error: " + rec["error"])
     end
@@ -135,7 +144,10 @@ pub function tls_mock_establish(config: TlsConfig, version: int = TlsVersion.Tls
     return ctx
 end
 
-## Sends raw bytes over the established tunnel.
+## Sends text over the established tunnel (TEXT-SAFE ONLY).
+##
+## Payloads with NUL bytes are truncated by the string layer; use
+## `tls_send_data` for binary records.
 ##
 ## ### Parameters
 ## - `ctx`: Active `TlsContext`.
@@ -153,7 +165,22 @@ pub function tls_send(ctx: TlsContext, data: string) -> int
     return net::tcp_send(ctx.sock, data)
 end
 
-## Receives up to `max_bytes` from the tunnel.
+## Sends binary data over the tunnel (NUL-safe).
+##
+## ### Parameters
+## - `ctx`: Active `TlsContext`.
+## - `data`: Payload byte array.
+##
+## ### Returns
+## Bytes sent, or -1 when the socket is unusable.
+pub function tls_send_data(ctx: TlsContext, data) -> int
+    if ctx is null or ctx.sock < 0
+        return -1
+    end
+    return raw_send(ctx.sock, data)
+end
+
+## Receives text from the tunnel (TEXT-SAFE ONLY).
 ##
 ## ### Parameters
 ## - `ctx`: Active `TlsContext`.
@@ -172,14 +199,32 @@ pub function tls_recv(ctx: TlsContext, max_bytes: int = 4096) -> string
     return net::tcp_recv(ctx.sock, limit)
 end
 
+## Receives binary data from the tunnel (NUL-safe).
+##
+## ### Parameters
+## - `ctx`: Active `TlsContext`.
+## - `max_bytes`: Read limit. Defaults to `4096`.
+##
+## ### Returns
+## Byte array (empty on close/error).
+pub function tls_recv_data(ctx: TlsContext, max_bytes: int = 4096) -> array
+    if ctx is null or ctx.sock < 0
+        return []
+    end
+    return raw_recv(ctx.sock, max_bytes)
+end
+
 ## Frames plaintext as ApplicationData records for an established session.
+##
+## Returns binary record arrays (not strings) because record headers
+## routinely contain NUL bytes. Send each element with `tls_send_data`.
 ##
 ## ### Parameters
 ## - `ctx`: Established `TlsContext`.
 ## - `plaintext`: Payload byte array.
 ##
 ## ### Returns
-## Array of record wire strings ready for `tls_send`.
+## Array of record byte arrays ready for `tls_send_data`.
 pub function tls_wrap_app_data(ctx: TlsContext, plaintext) -> array
     let out = []
     if ctx is null or ctx.session.is_established() == 0
@@ -193,13 +238,57 @@ pub function tls_wrap_app_data(ctx: TlsContext, plaintext) -> array
     let i = 0
     while i < len(parts)
         let rec = record_encode(TlsContentType.ApplicationData, ctx.session.version, parts[i])
-        out.push(rec["wire"])
+        out.push(rec["bytes"])
         i += 1
     end
     return out
 end
 
+## Verifies a peer certificate against the context policy and records it.
+##
+## Call after the handshake with the peer-supplied chain (current scope:
+## caller-supplied certificates; automatic `Certificate`-message parsing
+## is a tracked future). `Required` mode fails the context on any check
+## failure; `Optional` reports advisory verdicts without failing.
+##
+## ### Parameters
+## - `ctx`: Active `TlsContext` (mutated: fingerprint stored, may fail).
+## - `cert`: Parsed peer certificate (or null when none presented).
+## - `now_stamp`: Reference stamp (`""` skips the time check).
+## - `pinned_fp`: Optional pinned fingerprint (`""` disables).
+##
+## ### Returns
+## Verdict map with `ok`, `host_ok`, `time_ok`, `pin_ok`, `detail`.
+pub function tls_verify_session(ctx: TlsContext, cert, now_stamp: string = "", pinned_fp: string = "") -> map
+    let mode = TlsVerifyMode.Required
+    if ctx is not null
+        mode = ctx.config.verify_mode
+    end
+    if mode == TlsVerifyMode.None
+        return { "ok": 1, "host_ok": 1, "time_ok": 1, "pin_ok": 1, "detail": "verification disabled" }
+    end
+    if cert is null or ctx is null
+        if ctx is not null
+            ctx.fail("no peer certificate presented")
+        end
+        return { "ok": 0, "host_ok": 0, "time_ok": 0, "pin_ok": 1, "detail": "no peer certificate presented" }
+    end
+    let hostname = ctx.config.host
+    if ctx.session.sni is not null and ctx.session.sni != ""
+        hostname = ctx.session.sni
+    end
+    let verdict = verify_peer(cert, hostname, mode, now_stamp, pinned_fp)
+    ctx.session.peer_fingerprint = cert.fingerprint_sha256
+    if mode == TlsVerifyMode.Required and verdict["ok"] == 0
+        ctx.fail(verdict["detail"])
+    end
+    return verdict
+end
+
 ## Closes the tunnel socket and marks the context closed.
+##
+## Sends a `close_notify` warning alert first (best effort, RFC 8446
+## section 6.1) so peers distinguish clean shutdown from truncation.
 ##
 ## ### Parameters
 ## - `ctx`: Target `TlsContext` (mutated in place).
@@ -209,6 +298,11 @@ end
 pub function tls_close(ctx: TlsContext) -> int
     if ctx is not null
         if ctx.sock >= 0
+            let ver = ctx.session.version
+            if version_is_supported(ver) == 0
+                ver = TlsVersion.Tls12
+            end
+            raw_send(ctx.sock, tls_alert_bytes(TlsAlertLevel.Warning, TlsAlertDescription.CloseNotify, ver))
             net::tcp_close(ctx.sock)
             ctx.sock = -1
         end

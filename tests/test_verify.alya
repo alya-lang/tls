@@ -56,6 +56,10 @@ function main()
     let off = tls::verify_peer(cert, "evil.com", tls::TlsVerifyMode.None, "", "")
     runner_assert_eq(r, off["ok"], 1, "disabled mode passes")
 
+    let advisory = tls::verify_peer(cert, "evil.com", tls::TlsVerifyMode.Optional, "20240101000000Z", "")
+    runner_assert_eq(r, advisory["ok"], 1, "optional stays advisory on mismatch")
+    runner_assert_eq(r, advisory["host_ok"], 0, "optional still reports host mismatch")
+
     let failed = runner_summary(r)
     if failed > 0
         exit(1)

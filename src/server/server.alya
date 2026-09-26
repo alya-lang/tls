@@ -8,8 +8,11 @@
 import "std/net" as net
 import "../types.alya"
 import "../core/version.alya"
+import "../core/cipher.alya"
 import "../core/record.alya"
 import "../core/handshake.alya"
+import "../cert/verify.alya"
+import "../io/raw.alya"
 
 ## Server listener handle.
 ##
@@ -21,6 +24,8 @@ import "../core/handshake.alya"
 ## - `cert_pem`: Server certificate chain in PEM format.
 ## - `key_pem`: Server private key in PEM format.
 ## - `require_client_cert`: `1` for mutual TLS, `0` otherwise.
+## - `cipher_allowlist`: Server cipher preference (empty means defaults).
+## - `alpn`: Server ALPN preference ordered most-preferred first.
 pub struct TlsServer
     port: int,
     host: string,
@@ -28,7 +33,9 @@ pub struct TlsServer
     running: int,
     cert_pem: string,
     key_pem: string,
-    require_client_cert: int
+    require_client_cert: int,
+    cipher_allowlist: array,
+    alpn: array
 end
 
 ## Creates a new TLS server listener.
@@ -51,7 +58,9 @@ pub function tls_server_new(port: int = 8443, host: string = "0.0.0.0") -> TlsSe
         running: 0,
         cert_pem: "",
         key_pem: "",
-        require_client_cert: 0
+        require_client_cert: 0,
+        cipher_allowlist: [],
+        alpn: ["h2", "http/1.1"]
     }
 end
 
@@ -136,15 +145,15 @@ pub function tls_server_accept(server: TlsServer, timeout_ms: int = 1000)
         return null
     end
     net::tcp_set_timeout(client_sock, 5000)
-    let raw = net::tcp_recv(client_sock, 4096)
+    let raw = raw_recv(client_sock, 4096)
     let cfg = tls_config_new("server", server.port, TlsVerifyMode.Optional)
     let ctx = tls_context_new(cfg)
     ctx.sock = client_sock
-    if raw is null or len(raw) == 0
+    if len(raw) == 0
         ctx.state = TlsState.TcpConnected
         return ctx
     end
-    let rec = record_decode(wire_to_bytes(raw))
+    let rec = record_decode(raw)
     if rec["error"] == "" and rec["type"] == TlsContentType.Handshake and len(rec["fragment"]) > 4
         let frag = rec["fragment"]
         if frag[0] == TlsHandshakeType.ClientHello
@@ -177,4 +186,104 @@ pub function tls_server_close(server: TlsServer) -> int
         server.running = 0
     end
     return 0
+end
+
+## Sets the server cipher preference list.
+##
+## ### Parameters
+## - `server`: Target `TlsServer` handle (mutated in place).
+## - `suites`: Suite id array in server preference order.
+##
+## ### Returns
+## The same server for chaining.
+pub function tls_server_set_ciphers(server: TlsServer, suites) -> TlsServer
+    if suites is null
+        server.cipher_allowlist = []
+    else
+        server.cipher_allowlist = suites
+    end
+    return server
+end
+
+## Sets the server ALPN preference list.
+##
+## ### Parameters
+## - `server`: Target `TlsServer` handle (mutated in place).
+## - `protocols`: Protocol names most-preferred first.
+##
+## ### Returns
+## The same server for chaining.
+pub function tls_server_set_alpn(server: TlsServer, protocols) -> TlsServer
+    if protocols is null
+        server.alpn = []
+    else
+        server.alpn = protocols
+    end
+    return server
+end
+
+## Negotiates suite and ALPN against one client's offer.
+##
+## Applies the server allowlist (empty means defaults) so operators can
+## disable weak suites without touching client code.
+##
+## ### Parameters
+## - `server`: Active `TlsServer` handle.
+## - `client_suites`: Client suite offer array.
+## - `client_alpn`: Client ALPN offer array.
+##
+## ### Returns
+## Map with `suite`, `alpn`, and `error` fields.
+pub function tls_server_negotiate(server: TlsServer, client_suites, client_alpn) -> map
+    let allowed = server.cipher_allowlist
+    if allowed is null or len(allowed) == 0
+        allowed = cipher_default_suites()
+    end
+    let offered = client_suites
+    if offered is null or len(offered) == 0
+        offered = cipher_default_suites()
+    end
+    let suite = cipher_select(offered, allowed)
+    if suite == 0
+        return { "suite": 0, "alpn": "", "error": "no overlapping cipher suite" }
+    end
+    return { "suite": suite, "alpn": alpn_select(server.alpn, client_alpn), "error": "" }
+end
+
+## Verifies a client certificate under mutual-TLS policy.
+##
+## When `require_client_cert` is set, a missing or failing certificate
+## fails the context; otherwise the verdict stays advisory.
+##
+## ### Parameters
+## - `server`: Active `TlsServer` handle.
+## - `ctx`: Client `TlsContext` (mutated: may fail).
+## - `cert`: Parsed client certificate (or null when none presented).
+## - `now_stamp`: Reference stamp (`""` skips the time check).
+## - `pinned_fp`: Optional pinned fingerprint (`""` disables).
+##
+## ### Returns
+## Verdict map with `ok`, `host_ok`, `time_ok`, `pin_ok`, `detail`.
+pub function tls_server_verify_client(server: TlsServer, ctx: TlsContext, cert, now_stamp: string = "", pinned_fp: string = "") -> map
+    if cert is null
+        if server.require_client_cert == 1
+            ctx.fail("client certificate required for mutual TLS")
+            return { "ok": 0, "host_ok": 0, "time_ok": 0, "pin_ok": 1, "detail": "client certificate required for mutual TLS" }
+        end
+        return { "ok": 1, "host_ok": 1, "time_ok": 1, "pin_ok": 1, "detail": "no client certificate (optional)" }
+    end
+    let hostname = ctx.session.sni
+    if hostname is null or hostname == ""
+        hostname = cert.subject_cn
+    end
+    let mode = TlsVerifyMode.Optional
+    if server.require_client_cert == 1
+        mode = TlsVerifyMode.Required
+    end
+    let verdict = verify_peer(cert, hostname, mode, now_stamp, pinned_fp)
+    ctx.session.peer_fingerprint = cert.fingerprint_sha256
+    if mode == TlsVerifyMode.Required and verdict["ok"] == 0
+        ctx.fail(verdict["detail"])
+    end
+    return verdict
 end
