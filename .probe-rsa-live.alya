@@ -1,0 +1,31 @@
+import "./src/lib.alya" as tls
+import "crypto" as crypto
+
+function dump(tag: string, arr)
+    let s = ""
+    let i = 0
+    while i < len(arr)
+        s = s + str(arr[i]) + ","
+        i += 1
+    end
+    write_file(".probe-" + tag + ".txt", s)
+end
+
+function main()
+    let cfg = tls::insecure_config("localhost", 18452)
+    cfg.cipher_allowlist = [156]
+    let ctx = tls::connect(cfg)
+    let leaf = ctx.keys["leaf_der"]
+    dump("leaf", leaf)
+    let pubkey = crypto::rsa_parse_pubkey(leaf)
+    let pre = [3, 3]
+    let i = 0
+    while i < 46
+        pre.push(i)
+        i += 1
+    end
+    dump("enc", tls::rsa_encrypt_premaster(pubkey["n"], pubkey["e"], pre))
+    say "wrote n=" + str(len(pubkey["n"]))
+end
+
+main()

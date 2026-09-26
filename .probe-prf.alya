@@ -1,0 +1,25 @@
+import "./src/lib.alya" as tls
+
+function dump(tag: string, arr)
+    let s = ""
+    let i = 0
+    while i < len(arr)
+        s = s + str(arr[i]) + ","
+        i += 1
+    end
+    write_file(".probe-" + tag + ".txt", s)
+end
+
+function main()
+    let cfg = tls::insecure_config("localhost", 18452)
+    cfg.cipher_allowlist = [156]
+    let ctx = tls::connect(cfg)
+    dump("tr-pre", ctx.keys["transcript"])
+    let full = tls::tls_handshake_complete(ctx)
+    say "err: " + full.last_error
+    dump("tr-full", full.keys["transcript"])
+    dump("master", full.keys["master"])
+    tls::close(full)
+end
+
+main()
