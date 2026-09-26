@@ -1,0 +1,131 @@
+## Suite-aware bulk protection with negotiated AEAD primitives.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Dispatches between AES-GCM and ChaCha20-Poly1305 according to the
+## negotiated cipher suite. Keys and nonces stay caller-managed: pair with
+## `core/keys.alya` derivation and `io/raw.alya` transport.
+
+import "crypto" as crypto
+import "./cipher.alya"
+
+## Returns 1 when the suite negotiates AES-GCM bulk encryption.
+##
+## Covers TLS 1.3 `TLS_AES_*_GCM_*` suites and TLS 1.2 GCM suites with
+## RSA/ECDHE key exchange.
+##
+## ### Parameters
+## - `suite`: Numeric cipher suite id.
+##
+## ### Returns
+## `1` for AES-GCM suites, `0` otherwise.
+pub function suite_uses_aes_gcm(suite: int) -> int
+    if suite == SUITE_AES_128_GCM_SHA256 or suite == SUITE_AES_256_GCM_SHA384
+        return 1
+    end
+    if suite == SUITE_ECDHE_RSA_AES128_GCM_SHA256 or suite == SUITE_ECDHE_RSA_AES256_GCM_SHA384 or suite == SUITE_RSA_AES128_GCM_SHA256
+        return 1
+    end
+    return 0
+end
+
+## Returns 1 when the suite negotiates ChaCha20-Poly1305 bulk encryption.
+##
+## ### Parameters
+## - `suite`: Numeric cipher suite id.
+##
+## ### Returns
+## `1` for ChaCha20-Poly1305 suites, `0` otherwise.
+pub function suite_uses_chacha(suite: int) -> int
+    if suite == SUITE_CHACHA20_POLY1305_SHA256 or suite == SUITE_ECDHE_RSA_CHACHA20_POLY1305
+        return 1
+    end
+    return 0
+end
+
+## Encrypts and authenticates payload bytes with the suite AEAD.
+##
+## ### Parameters
+## - `suite`: Negotiated cipher suite id.
+## - `key`: Cipher key bytes (16/32 for AES-GCM, 32 for ChaCha20).
+## - `nonce12`: 12-byte nonce (unique per key).
+## - `aad`: Additional authenticated data bytes.
+## - `plaintext`: Payload byte array.
+##
+## ### Returns
+## Map with `ciphertext`, `tag`, and `error` fields (`error` empty on success).
+pub function tls_protect_aead(suite: int, key, nonce12, aad, plaintext) -> map
+    let fail = { "ciphertext": [], "tag": [], "error": "unsupported cipher suite" }
+    if suite_uses_aes_gcm(suite) == 1
+        if len(key) != 16 and len(key) != 32
+            return { "ciphertext": [], "tag": [], "error": "AES-GCM key must be 16 or 32 bytes" }
+        end
+        if len(nonce12) != 12
+            return { "ciphertext": [], "tag": [], "error": "AEAD nonce must be 12 bytes" }
+        end
+        let res = crypto::aes_gcm_encrypt_bytes(key, nonce12, aad_or_empty(aad), data_or_empty(plaintext))
+        return { "ciphertext": res[0], "tag": res[1], "error": "" }
+    end
+    if suite_uses_chacha(suite) == 1
+        if len(key) != 32
+            return { "ciphertext": [], "tag": [], "error": "ChaCha20 key must be 32 bytes" }
+        end
+        if len(nonce12) != 12
+            return { "ciphertext": [], "tag": [], "error": "AEAD nonce must be 12 bytes" }
+        end
+        let res = crypto::chacha20_poly1305_encrypt_bytes(key, nonce12, aad_or_empty(aad), data_or_empty(plaintext))
+        return { "ciphertext": res[0], "tag": res[1], "error": "" }
+    end
+    return fail
+end
+
+## Decrypts and verifies payload bytes with the suite AEAD.
+##
+## Authentication failures report through `error`, never throw.
+##
+## ### Parameters
+## - `suite`: Negotiated cipher suite id.
+## - `key`: Cipher key bytes.
+## - `nonce12`: 12-byte nonce used at encryption.
+## - `aad`: Additional authenticated data bytes.
+## - `ciphertext`: Ciphertext byte array.
+## - `tag`: Authentication tag byte array.
+##
+## ### Returns
+## Map with `plaintext` and `error` fields (`error` empty on success).
+pub function tls_unprotect_aead(suite: int, key, nonce12, aad, ciphertext, tag) -> map
+    if suite_uses_aes_gcm(suite) == 1
+        let pt = []
+        try
+            pt = crypto::aes_gcm_decrypt_bytes(key, nonce12, aad_or_empty(aad), data_or_empty(ciphertext), tag)
+        catch e
+            return { "plaintext": [], "error": "AES-GCM authentication failed" }
+        end
+        return { "plaintext": pt, "error": "" }
+    end
+    if suite_uses_chacha(suite) == 1
+        let pt = []
+        try
+            pt = crypto::chacha20_poly1305_decrypt_bytes(key, nonce12, aad_or_empty(aad), data_or_empty(ciphertext), tag)
+        catch e
+            return { "plaintext": [], "error": "ChaCha20-Poly1305 authentication failed" }
+        end
+        return { "plaintext": pt, "error": "" }
+    end
+    return { "plaintext": [], "error": "unsupported cipher suite" }
+end
+
+# Normalizes a nullable byte array to an empty array.
+function aad_or_empty(data) -> array
+    if data is null
+        return []
+    end
+    return data
+end
+
+# Normalizes a nullable byte array to an empty array.
+function data_or_empty(data) -> array
+    if data is null
+        return []
+    end
+    return data
+end

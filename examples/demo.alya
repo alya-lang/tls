@@ -68,6 +68,8 @@ function main()
     let tx = tls::transcript_hash(hello["body"])
     let fin = tls::finished_verify_data(ms, "client finished", tx)
     say "Verify data:   " + str(len(fin)) + " bytes"
+    let prot = tls::tls_protect_aead(tls::SUITE_AES_128_GCM_SHA256, tls::slice_from(ms, 0, 16), tls::slice_from(rnd, 0, 12), tx, [72, 105])
+    say "AEAD protect:  '" + prot["error"] + "' ct=" + str(len(prot["ciphertext"]))
     say ""
 
     # ───────────────────────────────────────────────────────────

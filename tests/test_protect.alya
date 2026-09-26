@@ -1,0 +1,71 @@
+## Bulk AEAD protection tests for tls
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function main()
+    test_suite("TLS Protect Tests")
+    let r = runner_new()
+
+    runner_assert_eq(r, tls::suite_uses_aes_gcm(4865), 1, "0x1301 uses aes-gcm")
+    runner_assert_eq(r, tls::suite_uses_aes_gcm(49199), 1, "0xC02F uses aes-gcm")
+    runner_assert_eq(r, tls::suite_uses_aes_gcm(4867), 0, "0x1303 not aes-gcm")
+    runner_assert_eq(r, tls::suite_uses_chacha(4867), 1, "0x1303 uses chacha")
+    runner_assert_eq(r, tls::suite_uses_chacha(52392), 1, "0xCCA8 uses chacha")
+    runner_assert_eq(r, tls::suite_uses_chacha(4865), 0, "0x1301 not chacha")
+
+    # AES-GCM through the tls layer (GCM spec Case 2 ground truth)
+    let k0 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let n0 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let p16 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let enc = tls::tls_protect_aead(4865, k0, n0, [], p16)
+    runner_assert_str_eq(r, enc["error"], "", "gcm protect clean")
+    runner_assert_eq(r, len(enc["ciphertext"]), 16, "gcm ciphertext len")
+    runner_assert_eq(r, len(enc["tag"]), 16, "gcm tag len")
+    let dec = tls::tls_unprotect_aead(4865, k0, n0, [], enc["ciphertext"], enc["tag"])
+    runner_assert_str_eq(r, dec["error"], "", "gcm unprotect clean")
+    runner_assert_eq(r, len(dec["plaintext"]), 16, "gcm plaintext len")
+
+    # Tampered tag reports through error, never throws
+    let bad_tag = []
+    let t = 0
+    while t < 16
+        bad_tag.push(enc["tag"][t])
+        t += 1
+    end
+    bad_tag[0] = 255 - bad_tag[0]
+    let tampered = tls::tls_unprotect_aead(4865, k0, n0, [], enc["ciphertext"], bad_tag)
+    runner_assert_true(r, tampered["error"] != "", "gcm tamper reports error")
+    runner_assert_eq(r, len(tampered["plaintext"]), 0, "gcm tamper yields no plaintext")
+
+    # ChaCha20-Poly1305 roundtrip through the tls layer
+    let ck = []
+    let q = 0
+    while q < 32
+        ck.push(q)
+        q += 1
+    end
+    let cn = [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]
+    let cenc = tls::tls_protect_aead(4867, ck, cn, [1, 2], [72, 105])
+    runner_assert_str_eq(r, cenc["error"], "", "chacha protect clean")
+    let cdec = tls::tls_unprotect_aead(4867, ck, cn, [1, 2], cenc["ciphertext"], cenc["tag"])
+    runner_assert_str_eq(r, cdec["error"], "", "chacha unprotect clean")
+    runner_assert_eq(r, len(cdec["plaintext"]), 2, "chacha plaintext len")
+    runner_assert_eq(r, cdec["plaintext"][0], 72, "chacha plaintext byte")
+
+    # Unknown suite and bad key sizes fail closed
+    let unk = tls::tls_protect_aead(9999, k0, n0, [], p16)
+    runner_assert_true(r, unk["error"] != "", "unknown suite reports error")
+    let badkey = tls::tls_protect_aead(4865, [1, 2, 3], n0, [], p16)
+    runner_assert_true(r, badkey["error"] != "", "short key reports error")
+    let unk_dec = tls::tls_unprotect_aead(9999, k0, n0, [], p16, p16)
+    runner_assert_true(r, unk_dec["error"] != "", "unknown suite decrypt reports error")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

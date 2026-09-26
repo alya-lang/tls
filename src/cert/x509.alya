@@ -385,3 +385,51 @@ pub function parse_certificate_pem(pem) -> TlsCertificate
     end
     return parse_certificate(der)
 end
+
+## Parses a TLS Certificate handshake message into certificate summaries.
+##
+## Message layout is a 3-byte total length followed by repeated 3-byte
+## length + DER entries (RFC 8446 section 4.4.2). Truncated tails stop the
+## walk instead of throwing, so partial captures still yield prefixes.
+##
+## ### Parameters
+## - `body`: Certificate message body byte array (without handshake header).
+##
+## ### Returns
+## Array of parsed `TlsCertificate` instances (possibly empty).
+pub function parse_certificate_chain(body) -> array
+    let out = []
+    if body is null or len(body) < 3
+        return out
+    end
+    let total = body[0] * 65536 + body[1] * 256 + body[2]
+    let pos = 3
+    let stop = pos + total
+    if stop > len(body)
+        stop = len(body)
+    end
+    while pos + 3 <= stop
+        let clen = body[pos] * 65536 + body[pos + 1] * 256 + body[pos + 2]
+        pos += 3
+        if clen <= 0 or pos + clen > stop
+            break
+        end
+        out.push(parse_certificate(chain_slice(body, pos, clen)))
+        pos += clen
+    end
+    return out
+end
+
+# Copies `n` bytes starting at `offset` from a byte array.
+function chain_slice(data, offset: int, n: int) -> array
+    let part = []
+    if data is null or n <= 0
+        return part
+    end
+    let i = 0
+    while i < n and offset + i < len(data)
+        part.push(data[offset + i])
+        i += 1
+    end
+    return part
+end

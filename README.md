@@ -14,7 +14,8 @@ Native TLS and SSL client, server, certificate verification and secure networkin
 - 🔐 **TLS Client & Server**: TCP dial with ClientHello/ServerHello negotiation (`tls_connect`), listener lifecycle with ClientHello inspection (`tls_server_accept`), and SNI-aware sessions
 - ✅ **Certificate Verification**: RFC 6125 hostname matching (SAN-first, single-label wildcards), validity-window checks, SHA-256 fingerprint pinning, and `Required/Optional/None` policy modes
 - 📜 **X.509 & PEM Tooling**: RFC 7468 armor parsing, DER extraction, minimal field scanner (CN, SAN, validity, serial), plus a real openssl-generated certificate vector in tests
-- 🤝 **Handshake & Key Schedule**: Structurally valid ClientHello builder (SNI + ALPN extensions), ServerHello parser, TLS 1.2 PRF/master-secret/key-block, TLS 1.3 HKDF-Expand-Label, and Finished verify data
+- 🤝 **Handshake & Key Schedule**: Structurally valid ClientHello builder (SNI + ALPN extensions), ServerHello builder/parser roundtrip, `Certificate`-message chain parsing, TLS 1.2 PRF/master-secret/key-block, TLS 1.3 HKDF-Expand-Label, and Finished verify data
+- 🔒 **Bulk AEAD Protection**: Suite-aware `tls_protect_aead`/`tls_unprotect_aead` dispatching AES-GCM and ChaCha20-Poly1305 from `crypto` v0.2.0, with error maps instead of throws
 - 🧱 **Record Layer**: RFC 8446 framing (encode/decode/validate), 16k fragmentation, ApplicationData wrapping, and alert record builders
 - ⚡ **Native C Engine**: Constant-time string comparison (anti-timing-attack), version-code ordering, shared cipher-strength policy, and **binary-safe socket send/receive** (explicit-length buffers, NUL-safe) via zero-dependency FFI
 - 🔌 **Binary-First I/O**: Alya strings cannot hold NUL bytes, so every record crosses the socket as a byte array through `io/raw.alya` — string helpers are marked text-safe-only
@@ -39,6 +40,7 @@ tls/
 │   ├── core/
 │   │   ├── version.alya    # Version codes, labels, negotiation
 │   │   ├── cipher.alya     # Suite registry, strength, selection
+│   │   ├── protect.alya    # Suite-aware AEAD protect/unprotect
 │   │   ├── record.alya     # Record framing, fragmentation, byte helpers
 │   │   ├── handshake.alya  # ClientHello, ServerHello, SNI/ALPN, Finished
 │   │   └── keys.alya       # PRF, master secret, key block, HKDF label
@@ -57,6 +59,7 @@ tls/
 │   ├── test_ffi.alya       # Native engine verification
 │   ├── test_version.alya   # Negotiation tests
 │   ├── test_cipher.alya    # Suite selection tests
+│   ├── test_protect.alya   # AEAD protect/unprotect tests
 │   ├── test_record.alya    # Framing roundtrip tests
 │   ├── test_handshake.alya # Hello build/parse tests
 │   ├── test_keys.alya      # Key schedule tests
@@ -69,7 +72,7 @@ tls/
 ```
 
 > [!NOTE]
-> **Scope:** `v0.1.0` negotiates versions/suites over real TCP through binary-safe I/O, verifies caller-supplied chains with mode enforcement, and shuts down cleanly with `close_notify`. Remaining: automatic `Certificate`-message chain parsing, server-side key exchange, bulk record encryption (needs AES-GCM in `crypto`), chain building, revocation, and session resumption — the handshake stub never claims encryption it does not perform.
+> **Scope:** `v0.1.0` negotiates versions/suites over real TCP through binary-safe I/O, parses handshake `Certificate` messages, verifies caller-supplied chains with mode enforcement, protects bulk data with negotiated AEAD (keys caller-managed via `core/keys.alya`), and shuts down cleanly with `close_notify`. Remaining: automatic chain extraction during the live handshake, server-side key exchange (ECDHE), chain building, revocation, and session resumption.
 >
 > [!NOTE]
 > **String limitation:** Alya strings cannot hold NUL bytes, so `bytes_to_wire`/`wire_to_bytes` are text-safe-only helpers. All record transport uses byte arrays with `io/raw.alya` (`raw_send`/`raw_recv`).
@@ -178,6 +181,8 @@ main()
 | `cipher_select(client, server)` | `array, array` | Strongest common suite, or 0 |
 | `cipher_suite_name(suite)` | `suite: int` | IANA suite name |
 | `cipher_is_aead(suite)` | `suite: int` | `1` for AEAD suites |
+| `tls_protect_aead(suite, key, n12, aad, pt)` | `int, array, array, array, array` | AEAD encrypt → `ciphertext`/`tag`/`error` |
+| `tls_unprotect_aead(suite, key, n12, aad, ct, tag)` | `int, array, array, array, array, array` | AEAD decrypt → `plaintext`/`error` |
 
 ### Records & Handshake (`core/record.alya`, `core/handshake.alya`, `core/keys.alya`)
 
@@ -201,6 +206,7 @@ main()
 | `pem_first_cert_der(pem)` | `pem: string` | DER bytes of first CERTIFICATE block |
 | `parse_certificate(der)` | `der: array` | Scans CN/SAN/validity/serial/fingerprint |
 | `parse_certificate_pem(pem)` | `pem: string` | PEM-to-summary shortcut |
+| `parse_certificate_chain(body)` | `body: array` | Parses handshake Certificate message |
 | `verify_hostname(cert, host)` | `cert, host: string` | SAN-first RFC 6125 match |
 | `verify_fingerprint(cert, pin)` | `cert, pin: string` | Constant-time pin compare |
 | `verify_peer(cert, host, mode, now, pin)` | `cert, host, int, str, str` | Full verdict map |

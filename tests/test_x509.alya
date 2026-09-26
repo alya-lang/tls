@@ -131,6 +131,51 @@ function main()
     let empty = tls::parse_certificate([])
     runner_assert_str_eq(r, empty.subject_cn, "", "empty cert no cn")
 
+    # ── Certificate handshake message framing ──
+    let der = sample_der()
+    let entry_head = [0, 0, len(der)]
+    let msg = [0, 0, 3 + len(der)]
+    let h = 0
+    while h < 3
+        msg.push(entry_head[h])
+        h += 1
+    end
+    let d = 0
+    while d < len(der)
+        msg.push(der[d])
+        d += 1
+    end
+    let chain = tls::parse_certificate_chain(msg)
+    runner_assert_eq(r, len(chain), 1, "chain holds one cert")
+    runner_assert_str_eq(r, chain[0].subject_cn, "example", "chain cert subject")
+    let entry_len = [0, 0, len(der)]
+    let two = [0, 0, (3 + len(der)) * 2]
+    let e = 0
+    while e < 3
+        two.push(entry_len[e])
+        e += 1
+    end
+    e = 0
+    while e < len(der)
+        two.push(der[e])
+        e += 1
+    end
+    e = 0
+    while e < 3
+        two.push(entry_len[e])
+        e += 1
+    end
+    e = 0
+    while e < len(der)
+        two.push(der[e])
+        e += 1
+    end
+    runner_assert_eq(r, len(two), 3 + (3 + len(der)) * 2, "two-cert message size")
+    let chain2 = tls::parse_certificate_chain(two)
+    runner_assert_eq(r, len(chain2), 2, "chain holds two certs")
+    runner_assert_eq(r, len(tls::parse_certificate_chain([0, 0, 50, 1, 2])), 0, "truncated chain safe")
+    runner_assert_eq(r, len(tls::parse_certificate_chain(null)), 0, "null chain safe")
+
     # ── Real-world vector: openssl self-signed cert ──
     let real_pem = real_cert_pem()
     runner_assert_eq(r, tls::pem_cert_count(real_pem), 1, "real pem one block")
