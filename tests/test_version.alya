@@ -1,0 +1,41 @@
+## Version negotiation tests for tls
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function main()
+    test_suite("TLS Version Tests")
+    let r = runner_new()
+
+    runner_assert_eq(r, tls::version_code(3, 3), 771, "version_code 3.3")
+    runner_assert_eq(r, tls::version_major(771), 3, "major of 771")
+    runner_assert_eq(r, tls::version_minor(771), 3, "minor of 771")
+
+    runner_assert_str_eq(r, tls::version_to_string(tls::TlsVersion.Tls12), "TLSv1.2", "label 1.2")
+    runner_assert_str_eq(r, tls::version_to_string(tls::TlsVersion.Tls13), "TLSv1.3", "label 1.3")
+    runner_assert_str_eq(r, tls::version_to_string(9999), "TLS-unknown", "unknown label")
+
+    runner_assert_eq(r, tls::version_parse("TLSv1.3"), tls::TlsVersion.Tls13, "parse TLSv1.3")
+    runner_assert_eq(r, tls::version_parse("1.2"), tls::TlsVersion.Tls12, "parse 1.2")
+    runner_assert_eq(r, tls::version_parse("bogus"), 0, "parse bogus is 0")
+
+    runner_assert_eq(r, tls::version_is_supported(tls::TlsVersion.Tls10), 1, "1.0 supported")
+    runner_assert_eq(r, tls::version_is_supported(9999), 0, "9999 unsupported")
+    runner_assert_eq(r, tls::version_is_secure(tls::TlsVersion.Tls13), 1, "1.3 secure")
+    runner_assert_eq(r, tls::version_is_secure(tls::TlsVersion.Tls10), 0, "1.0 insecure")
+
+    let lo = tls::TlsVersion.Tls12
+    let hi = tls::TlsVersion.Tls13
+    runner_assert_eq(r, tls::version_negotiate(lo, hi, tls::TlsVersion.Tls12), tls::TlsVersion.Tls12, "negotiate inside range")
+    runner_assert_eq(r, tls::version_negotiate(lo, hi, tls::TlsVersion.Tls13), tls::TlsVersion.Tls13, "negotiate top of range")
+    runner_assert_eq(r, tls::version_negotiate(lo, hi, tls::TlsVersion.Tls10), 0, "negotiate below range fails")
+    runner_assert_eq(r, tls::version_negotiate(hi, lo, hi), 0, "inverted bounds fail")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

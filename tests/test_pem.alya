@@ -1,0 +1,42 @@
+## PEM parsing tests for tls
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function pem_sample() -> string
+    return "-----BEGIN CERTIFICATE-----\nSGVsbG8=\n-----END CERTIFICATE-----\n"
+end
+
+function main()
+    test_suite("TLS PEM Tests")
+    let r = runner_new()
+
+    let body = tls::pem_body(pem_sample(), "CERTIFICATE")
+    runner_assert_str_eq(r, body, "SGVsbG8=", "pem body extracted")
+
+    runner_assert_eq(r, tls::pem_has_block(pem_sample(), "CERTIFICATE"), 1, "has cert block")
+    runner_assert_eq(r, tls::pem_has_block(pem_sample(), "PRIVATE KEY"), 0, "missing key block")
+    runner_assert_eq(r, tls::pem_has_block(null, "CERTIFICATE"), 0, "null pem safe")
+
+    let der = tls::pem_to_der(pem_sample(), "CERTIFICATE")
+    runner_assert_eq(r, len(der), 5, "SGVsbG8= decodes to 5 bytes")
+    runner_assert_eq(r, der[0], 72, "first byte H")
+
+    let bundle = pem_sample() + "-----BEGIN CERTIFICATE-----\nV29ybGQ=\n-----END CERTIFICATE-----\n"
+    runner_assert_eq(r, tls::pem_cert_count(bundle), 2, "bundle has 2 certs")
+    runner_assert_eq(r, tls::pem_cert_count("no armor here"), 0, "no armor zero count")
+
+    let fp = tls::der_fingerprint_sha256(der)
+    runner_assert_eq(r, len(fp), 64, "fingerprint 64 hex chars")
+
+    runner_assert_str_eq(r, tls::fingerprint_normalize("AB:cd-12 34"), "abcd1234", "fingerprint normalized")
+    runner_assert_str_eq(r, tls::fingerprint_normalize(null), "", "null fingerprint empty")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

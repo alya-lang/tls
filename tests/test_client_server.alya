@@ -1,0 +1,55 @@
+## Client and server lifecycle tests for tls (offline)
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/str"
+import "std/test"
+import "../src/lib.alya" as tls
+
+function main()
+    test_suite("TLS Client/Server Tests")
+    let r = runner_new()
+
+    let cfg = tls::config("example.com")
+    let mock = tls::tls_mock_establish(cfg)
+    runner_assert_eq(r, mock.session.version, tls::TlsVersion.Tls12, "mock version")
+    runner_assert_eq(r, mock.session.cipher_suite, 4865, "mock suite")
+    runner_assert_eq(r, mock.sock, -1, "mock has no socket")
+
+    let frames = tls::tls_wrap_app_data(mock, [72, 105])
+    runner_assert_eq(r, len(frames), 1, "one app-data frame")
+    let closed = tls::tls_context_new(cfg)
+    runner_assert_eq(r, len(tls::tls_wrap_app_data(closed, [1])), 0, "no frames before establish")
+
+    runner_assert_eq(r, tls::tls_send(closed, "hi"), -1, "send without socket is -1")
+    runner_assert_str_eq(r, tls::tls_recv(closed), "", "recv without socket empty")
+    runner_assert_eq(r, tls::tls_close(closed), 0, "close idempotent")
+
+    let wire = tls::https_request_wire("example.com", "/api")
+    runner_assert_true(r, index_of(wire, "GET /api HTTP/1.1") == 0, "request line")
+    runner_assert_true(r, index_of(wire, "Host: example.com") > 0, "host header")
+
+    let refused = tls::tls_client_config("127.0.0.1", 1, tls::TlsVerifyMode.None)
+    let ctx = tls::connect(refused)
+    runner_assert_eq(r, ctx.is_ok(), 0, "refused connection reports error")
+    runner_assert_eq(r, ctx.state, tls::TlsState.Failed, "refused state failed")
+    runner_assert_true(r, len(ctx.last_error) > 0, "refused error message set")
+    tls::close(ctx)
+
+    let srv = tls::server(18443, "127.0.0.1")
+    runner_assert_eq(r, srv.port, 18443, "server port")
+    runner_assert_eq(r, srv.running, 0, "server stopped initially")
+    runner_assert_eq(r, tls::tls_server_has_identity(srv), 0, "no identity initially")
+    tls::tls_server_enable_tls(srv, "CERT", "KEY", 0)
+    runner_assert_eq(r, tls::tls_server_has_identity(srv), 1, "identity attached")
+    srv.running = 1
+    runner_assert_eq(r, srv.running, 1, "server running flag")
+    tls::tls_server_close(srv)
+    runner_assert_eq(r, srv.running, 0, "server stopped after close")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

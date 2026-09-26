@@ -1,0 +1,65 @@
+## Peer verification tests for tls
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function cert_fixture()
+    let c = tls::tls_cert_empty()
+    c.subject = "CN=example"
+    c.issuer = "CN=Test"
+    c.subject_cn = "example"
+    c.issuer_cn = "Test"
+    c.san = ["example.com", "*.example.org"]
+    c.serial_hex = "2a"
+    c.not_before = "20230101000000Z"
+    c.not_after = "20250101000000Z"
+    c.fingerprint_sha256 = "abcd1234"
+    c.der_len = 64
+    return c
+end
+
+function main()
+    test_suite("TLS Verify Tests")
+    let r = runner_new()
+
+    runner_assert_eq(r, tls::dns_pattern_matches("example.com", "example.com"), 1, "exact match")
+    runner_assert_eq(r, tls::dns_pattern_matches("Example.COM", "example.com"), 1, "case-insensitive")
+    runner_assert_eq(r, tls::dns_pattern_matches("*.example.org", "api.example.org"), 1, "wildcard single label")
+    runner_assert_eq(r, tls::dns_pattern_matches("*.example.org", "a.b.example.org"), 0, "wildcard no multi-level")
+    runner_assert_eq(r, tls::dns_pattern_matches("*.example.org", "example.org"), 0, "wildcard needs label")
+    runner_assert_eq(r, tls::dns_pattern_matches("f*o.example.org", "foo.example.org"), 0, "partial wildcard rejected")
+    runner_assert_eq(r, tls::dns_pattern_matches("", "example.com"), 0, "empty pattern safe")
+
+    let cert = cert_fixture()
+    runner_assert_eq(r, tls::verify_hostname(cert, "example.com"), 1, "san exact verifies")
+    runner_assert_eq(r, tls::verify_hostname(cert, "api.example.org"), 1, "san wildcard verifies")
+    runner_assert_eq(r, tls::verify_hostname(cert, "other.com"), 0, "unknown host fails")
+
+    let cn_only = tls::tls_cert_empty()
+    cn_only.subject_cn = "solo.example"
+    runner_assert_eq(r, tls::verify_hostname(cn_only, "solo.example"), 1, "cn fallback verifies")
+    runner_assert_eq(r, tls::verify_hostname(cn_only, "x.example"), 0, "cn fallback mismatch")
+
+    runner_assert_eq(r, tls::verify_cert_time(cert, "20240101000000Z"), 1, "inside window")
+    runner_assert_eq(r, tls::verify_cert_time(cert, "20260101000000Z"), 0, "after window")
+    runner_assert_eq(r, tls::verify_cert_time(cert, "20220101000000Z"), 0, "before window")
+    runner_assert_eq(r, tls::verify_cert_time(cert, ""), 1, "empty stamp skips")
+
+    runner_assert_eq(r, tls::verify_fingerprint(cert, "AB:CD:12:34"), 1, "pin format-insensitive")
+    runner_assert_eq(r, tls::verify_fingerprint(cert, "ffff"), 0, "wrong pin fails")
+
+    let ok = tls::verify_peer(cert, "example.com", tls::TlsVerifyMode.Required, "20240101000000Z", "abcd1234")
+    runner_assert_eq(r, ok["ok"], 1, "full verification passes")
+    let bad_host = tls::verify_peer(cert, "evil.com", tls::TlsVerifyMode.Required, "20240101000000Z", "")
+    runner_assert_eq(r, bad_host["ok"], 0, "wrong host fails required")
+    let off = tls::verify_peer(cert, "evil.com", tls::TlsVerifyMode.None, "", "")
+    runner_assert_eq(r, off["ok"], 1, "disabled mode passes")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

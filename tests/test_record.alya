@@ -1,0 +1,63 @@
+## Record layer tests for tls
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function main()
+    test_suite("TLS Record Tests")
+    let r = runner_new()
+
+    runner_assert_eq(r, tls::bytes_to_u16([1, 2]), 258, "u16 decode")
+    runner_assert_eq(r, tls::bytes_to_u16([1]), -1, "u16 short is -1")
+    let enc = tls::u16_to_bytes(771)
+    runner_assert_eq(r, enc[0], 3, "u16 hi byte")
+    runner_assert_eq(r, enc[1], 3, "u16 lo byte")
+
+    let frag = [72, 105]
+    let rec = tls::record_encode(tls::TlsContentType.Handshake, tls::TlsVersion.Tls12, frag)
+    runner_assert_eq(r, rec["length"], 2, "record length")
+    runner_assert_eq(r, rec["bytes"][0], 22, "record type byte")
+    runner_assert_eq(r, rec["bytes"][1], 3, "record major byte")
+    runner_assert_eq(r, rec["bytes"][3], 0, "record len hi")
+    runner_assert_eq(r, rec["bytes"][4], 2, "record len lo")
+
+    let back = tls::record_decode(rec["bytes"])
+    runner_assert_str_eq(r, back["error"], "", "decode clean")
+    runner_assert_eq(r, back["type"], 22, "decode type")
+    runner_assert_eq(r, back["version"], 771, "decode version")
+    runner_assert_eq(r, len(back["fragment"]), 2, "decode fragment len")
+    runner_assert_eq(r, back["consumed"], 7, "decode consumed")
+
+    let trunc = tls::record_decode([22, 3, 3, 0, 10, 1, 2])
+    runner_assert_true(r, trunc["error"] != "", "truncated record errors")
+
+    let bad_type = tls::record_decode([99, 3, 3, 0, 0])
+    runner_assert_true(r, bad_type["error"] != "", "unknown type errors")
+
+    let wire = tls::bytes_to_wire([65, 66])
+    runner_assert_str_eq(r, wire, "AB", "bytes to wire")
+    let rt = tls::wire_to_bytes(wire)
+    runner_assert_eq(r, len(rt), 2, "wire roundtrip len")
+    runner_assert_eq(r, rt[0], 65, "wire roundtrip byte")
+
+    let big = []
+    let i = 0
+    while i < 40000
+        big.push(7)
+        i += 1
+    end
+    let parts = tls::record_fragment(big)
+    runner_assert_eq(r, len(parts), 3, "40k splits into 3 fragments")
+    runner_assert_eq(r, len(parts[0]), 16384, "first fragment full")
+
+    runner_assert_str_eq(r, tls::record_type_name(23), "application_data", "type name")
+    runner_assert_str_eq(r, tls::record_type_name(77), "unknown", "unknown type name")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

@@ -1,0 +1,180 @@
+## Peer verification: hostnames, validity windows, and pinning.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Hostname checks follow RFC 6125 wildcard rules (single left-most label).
+## Fingerprint comparisons use constant-time native equality.
+
+import "std/str"
+import "../types.alya"
+import "../ffi.alya"
+import "./pem.alya"
+
+## Matches one DNS pattern against a hostname (case-insensitive).
+##
+## A leading `*.` wildcard covers exactly one left-most label. Partial
+## wildcards such as `f*o.example` never match.
+##
+## ### Parameters
+## - `pattern`: Certificate DNS pattern (SAN or CN).
+## - `hostname`: Peer hostname under test.
+##
+## ### Returns
+## `1` on match, `0` otherwise.
+pub function dns_pattern_matches(pattern, hostname) -> int
+    if pattern is null or hostname is null
+        return 0
+    end
+    let pat = lower(trim(pattern))
+    let host = lower(trim(hostname))
+    if pat == "" or host == ""
+        return 0
+    end
+    if pat == host
+        return 1
+    end
+    if len(pat) > 2 and substring(pat, 0, 2) == "*."
+        let suffix = substring(pat, 2, len(pat) - 2)
+        if suffix == "" or index_of(suffix, "*") >= 0
+            return 0
+        end
+        if len(host) <= len(suffix)
+            return 0
+        end
+        let tail = substring(host, len(host) - len(suffix), len(suffix))
+        if tail != suffix
+            return 0
+        end
+        let left = substring(host, 0, len(host) - len(suffix) - 1)
+        if left == "" or index_of(left, ".") >= 0
+            return 0
+        end
+        return 1
+    end
+    return 0
+end
+
+## Verifies a hostname against certificate SAN entries, then CN.
+##
+## ### Parameters
+## - `cert`: Parsed `TlsCertificate` snapshot.
+## - `hostname`: Expected peer hostname.
+##
+## ### Returns
+## `1` on match, `0` otherwise.
+pub function verify_hostname(cert: TlsCertificate, hostname: string) -> int
+    if hostname is null or hostname == ""
+        return 0
+    end
+    if len(cert.san) > 0
+        let i = 0
+        while i < len(cert.san)
+            if dns_pattern_matches(cert.san[i], hostname) == 1
+                return 1
+            end
+            i += 1
+        end
+        return 0
+    end
+    return dns_pattern_matches(cert.subject_cn, hostname)
+end
+
+## Checks a validity window against a reference stamp.
+##
+## Stamps use normalized `YYYYMMDDHHMMSSZ` form so plain string
+## comparison orders them chronologically.
+##
+## ### Parameters
+## - `not_before`: Window start stamp.
+## - `not_after`: Window end stamp.
+## - `now_stamp`: Reference stamp (empty means skip the check).
+##
+## ### Returns
+## `1` when inside the window (or when `now_stamp` is empty), else `0`.
+pub function verify_time_window(not_before: string, not_after: string, now_stamp: string) -> int
+    if now_stamp is null or now_stamp == ""
+        return 1
+    end
+    if not_before is null or not_before == "" or not_after is null or not_after == ""
+        return 0
+    end
+    if now_stamp < not_before
+        return 0
+    end
+    if now_stamp > not_after
+        return 0
+    end
+    return 1
+end
+
+## Verifies a certificate time window.
+##
+## ### Parameters
+## - `cert`: Parsed `TlsCertificate` snapshot.
+## - `now_stamp`: Reference stamp (`""` skips the time check).
+##
+## ### Returns
+## `1` when valid, `0` otherwise.
+pub function verify_cert_time(cert: TlsCertificate, now_stamp: string = "") -> int
+    return verify_time_window(cert.not_before, cert.not_after, now_stamp)
+end
+
+## Compares a certificate fingerprint against a pinned value.
+##
+## ### Parameters
+## - `cert`: Parsed `TlsCertificate` snapshot.
+## - `expected`: Pinned fingerprint (any case, `:` separators allowed).
+##
+## ### Returns
+## `1` on constant-time match, `0` otherwise.
+pub function verify_fingerprint(cert: TlsCertificate, expected: string) -> int
+    if expected is null or expected == ""
+        return 0
+    end
+    let want = fingerprint_normalize(expected)
+    let have = fingerprint_normalize(cert.fingerprint_sha256)
+    if want == "" or have == ""
+        return 0
+    end
+    return alya_tls_const_eq(have, want)
+end
+
+## Runs hostname, time, and optional pinning checks per verify mode.
+##
+## - `Required`: hostname and time must pass; pinning applies when given.
+## - `Optional`: checks run but failures still report (never throw).
+## - `None`: always reports success with a note.
+##
+## ### Parameters
+## - `cert`: Parsed peer certificate.
+## - `hostname`: Expected peer hostname.
+## - `verify_mode`: `TlsVerifyMode` strictness.
+## - `now_stamp`: Reference stamp (`""` skips time).
+## - `pinned_fp`: Optional pinned fingerprint (`""` disables).
+##
+## ### Returns
+## Map with `ok`, `host_ok`, `time_ok`, `pin_ok`, and `detail` fields.
+pub function verify_peer(cert: TlsCertificate, hostname: string, verify_mode: int = TlsVerifyMode.Required, now_stamp: string = "", pinned_fp: string = "") -> map
+    let host_ok = verify_hostname(cert, hostname)
+    let time_ok = verify_cert_time(cert, now_stamp)
+    let pin_ok = 1
+    if pinned_fp is not null and pinned_fp != ""
+        pin_ok = verify_fingerprint(cert, pinned_fp)
+    end
+    if verify_mode == TlsVerifyMode.None
+        return { "ok": 1, "host_ok": host_ok, "time_ok": time_ok, "pin_ok": pin_ok, "detail": "verification disabled" }
+    end
+    if host_ok == 1 and time_ok == 1 and pin_ok == 1
+        return { "ok": 1, "host_ok": host_ok, "time_ok": time_ok, "pin_ok": pin_ok, "detail": "peer verified" }
+    end
+    let detail = ""
+    if host_ok == 0
+        detail = detail + "hostname mismatch; "
+    end
+    if time_ok == 0
+        detail = detail + "certificate not in validity window; "
+    end
+    if pin_ok == 0
+        detail = detail + "fingerprint pin mismatch; "
+    end
+    return { "ok": 0, "host_ok": host_ok, "time_ok": time_ok, "pin_ok": pin_ok, "detail": trim(detail) }
+end

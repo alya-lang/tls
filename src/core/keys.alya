@@ -1,0 +1,220 @@
+## TLS key schedule: PRF, master secret, and key expansion.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Implements the TLS 1.2 P_hash/PRF with HMAC-SHA256 and the TLS 1.3
+## HKDF-Expand-Label step on top of `crypto` primitives.
+
+import "crypto" as crypto
+
+## TLS 1.2 P_hash expansion with HMAC-SHA256.
+##
+## ### Parameters
+## - `secret`: Secret byte array.
+## - `seed`: Seed byte array (label + randoms).
+## - `out_len`: Requested output length in bytes.
+##
+## ### Returns
+## Pseudo-random byte array of `out_len` bytes.
+pub function p_hash(secret, seed, out_len: int) -> array
+    let out = []
+    if out_len <= 0
+        return out
+    end
+    let a_prev = crypto::hmac_sha256_bytes(secret, seed)
+    while len(out) < out_len
+        let chunk_in = []
+        let i = 0
+        while i < len(a_prev)
+            chunk_in.push(a_prev[i])
+            i += 1
+        end
+        let j = 0
+        while j < len(seed)
+            chunk_in.push(seed[j])
+            j += 1
+        end
+        let chunk = crypto::hmac_sha256_bytes(secret, chunk_in)
+        let k = 0
+        while k < len(chunk) and len(out) < out_len
+            out.push(chunk[k])
+            k += 1
+        end
+        a_prev = crypto::hmac_sha256_bytes(secret, a_prev)
+    end
+    return out
+end
+
+## Concatenates a label string with seed bytes.
+##
+## ### Parameters
+## - `label`: ASCII label string.
+## - `seed`: Seed byte array.
+##
+## ### Returns
+## Combined byte array.
+pub function label_seed(label: string, seed) -> array
+    let out = []
+    let i = 0
+    while i < len(label)
+        out.push(ord(char_at(label, i)))
+        i += 1
+    end
+    let j = 0
+    while j < len(seed)
+        out.push(seed[j])
+        j += 1
+    end
+    return out
+end
+
+## TLS 1.2 pseudorandom function (SHA-256 variant).
+##
+## ### Parameters
+## - `secret`: Secret byte array.
+## - `label`: ASCII label string.
+## - `seed`: Seed byte array.
+## - `out_len`: Requested output length.
+##
+## ### Returns
+## Pseudo-random byte array of `out_len` bytes.
+pub function prf_sha256(secret, label: string, seed, out_len: int) -> array
+    return p_hash(secret, label_seed(label, seed), out_len)
+end
+
+## Derives the 48-byte TLS 1.2 master secret.
+##
+## ### Parameters
+## - `pre_master`: Pre-master secret byte array.
+## - `client_random`: 32-byte client random array.
+## - `server_random`: 32-byte server random array.
+##
+## ### Returns
+## 48-byte master secret array.
+pub function master_secret(pre_master, client_random, server_random) -> array
+    let seed = []
+    let i = 0
+    while i < len(client_random)
+        seed.push(client_random[i])
+        i += 1
+    end
+    let j = 0
+    while j < len(server_random)
+        seed.push(server_random[j])
+        j += 1
+    end
+    return prf_sha256(pre_master, "master secret", seed, 48)
+end
+
+## Expands the master secret into key block material.
+##
+## ### Parameters
+## - `master`: 48-byte master secret array.
+## - `server_random`: 32-byte server random array.
+## - `client_random`: 32-byte client random array.
+## - `out_len`: Requested key block length.
+##
+## ### Returns
+## Key block byte array of `out_len` bytes.
+pub function key_block(master, server_random, client_random, out_len: int) -> array
+    let seed = []
+    let i = 0
+    while i < len(server_random)
+        seed.push(server_random[i])
+        i += 1
+    end
+    let j = 0
+    while j < len(client_random)
+        seed.push(client_random[j])
+        j += 1
+    end
+    return prf_sha256(master, "key expansion", seed, out_len)
+end
+
+## Splits a key block into MAC keys, cipher keys, and IVs.
+##
+## Layout follows the TLS 1.2 order: client MAC, server MAC, client key,
+## server key, client IV, server IV.
+##
+## ### Parameters
+## - `block`: Key block byte array.
+## - `mac_len`: MAC key length in bytes.
+## - `key_len`: Cipher key length in bytes.
+## - `iv_len`: Fixed IV length in bytes.
+##
+## ### Returns
+## Map with `client_mac`, `server_mac`, `client_key`, `server_key`,
+## `client_iv`, and `server_iv` arrays (possibly empty on short input).
+pub function split_key_block(block, mac_len: int, key_len: int, iv_len: int) -> map
+    let empty = { "client_mac": [], "server_mac": [], "client_key": [], "server_key": [], "client_iv": [], "server_iv": [] }
+    if block is null
+        return empty
+    end
+    let need = mac_len * 2 + key_len * 2 + iv_len * 2
+    if len(block) < need
+        return empty
+    end
+    let pos = 0
+    let c_mac = slice_from(block, pos, mac_len)
+    pos += mac_len
+    let s_mac = slice_from(block, pos, mac_len)
+    pos += mac_len
+    let c_key = slice_from(block, pos, key_len)
+    pos += key_len
+    let s_key = slice_from(block, pos, key_len)
+    pos += key_len
+    let c_iv = slice_from(block, pos, iv_len)
+    pos += iv_len
+    let s_iv = slice_from(block, pos, iv_len)
+    return { "client_mac": c_mac, "server_mac": s_mac, "client_key": c_key, "server_key": s_key, "client_iv": c_iv, "server_iv": s_iv }
+end
+
+## Copies `n` bytes starting at `offset` from a byte array.
+##
+## ### Parameters
+## - `block`: Source byte array.
+## - `offset`: Start position.
+## - `n`: Number of bytes to copy.
+##
+## ### Returns
+## Sliced byte array.
+pub function slice_from(block, offset: int, n: int) -> array
+    let part = []
+    if block is null or n <= 0
+        return part
+    end
+    let i = 0
+    while i < n and offset + i < len(block)
+        part.push(block[offset + i])
+        i += 1
+    end
+    return part
+end
+
+## TLS 1.3 HKDF-Expand-Label construction.
+##
+## Builds `HkdfLabel` (length + label + context) and expands with HKDF.
+##
+## ### Parameters
+## - `secret`: Input secret byte array.
+## - `label`: Label without the `"tls13 "` prefix.
+## - `context`: Context hash byte array.
+## - `out_len`: Requested output length.
+##
+## ### Returns
+## Expanded key material of `out_len` bytes.
+pub function hkdf_expand_label(secret, label: string, context, out_len: int) -> array
+    let full_label = "tls13 " + label
+    let info = [bit_and(bit_shr(out_len, 8), 255), bit_and(out_len, 255), len(full_label)]
+    let i = 0
+    while i < len(full_label)
+        info.push(ord(char_at(full_label, i)))
+        i += 1
+    end
+    info.push(len(context))
+    let j = 0
+    while j < len(context)
+        info.push(context[j])
+        j += 1
+    end
+    return crypto::hkdf_expand_bytes(secret, info, out_len, "sha256")
+end

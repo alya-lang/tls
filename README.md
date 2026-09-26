@@ -11,14 +11,13 @@ Native TLS and SSL client, server, certificate verification and secure networkin
 
 ## 🌟 Features
 
-- ⚡ **Lightweight & High Performance**: Minimal memory overhead, zero runtime bloat, and fast native execution
-- 🧩 **Modular Architecture**: Layered multi-module design featuring a clean public facade (`src/lib.alya`), rich data models (`src/types.alya`), and encapsulated core formatters (`src/core/formatter.alya`)
-- 🔒 **Public/Private Visibility (`pub`)**: Fine-grained export control with `pub` for public functions, structs, and enums, keeping internal helper functions private and encapsulated
-- 🎭 **Structural Duck Typing & Interfaces**: Dynamic interface dispatch (`Summarizable`, `Describable`) without brittle inheritance hierarchies
-- 📦 **Rich Domain Models & Enums**: Idiomatic `enum` types (`TlsStatus`, `TlsPriority`, `TlsStyle`) and typed data containers (`TlsConfig`, `TlsResult`, `TlsStats`)
-- 🎯 **Advanced Pattern Matching**: Clean branching with `when` expressions, range matching, and condition guards
-- 🛡️ **Defensive Result Pattern**: Structured error handling and outcome encapsulation with `ok_result` and `error_result`
-- 🧪 **Enterprise Test & Benchmark Suite**: 100% test coverage with standard assertions (`std/test`) and micro-benchmarking (`std/test` bench runner)
+- 🔐 **TLS Client & Server**: TCP dial with ClientHello/ServerHello negotiation (`tls_connect`), listener lifecycle with ClientHello inspection (`tls_server_accept`), and SNI-aware sessions
+- ✅ **Certificate Verification**: RFC 6125 hostname matching (SAN-first, single-label wildcards), validity-window checks, SHA-256 fingerprint pinning, and `Required/Optional/None` policy modes
+- 📜 **X.509 & PEM Tooling**: RFC 7468 armor parsing, DER extraction, minimal field scanner (CN, SAN, validity, serial), plus a real openssl-generated certificate vector in tests
+- 🤝 **Handshake & Key Schedule**: Structurally valid ClientHello builder (SNI + ALPN extensions), ServerHello parser, TLS 1.2 PRF/master-secret/key-block, TLS 1.3 HKDF-Expand-Label, and Finished verify data
+- 🧱 **Record Layer**: RFC 8446 framing (encode/decode/validate), 16k fragmentation, and ApplicationData wrapping for established sessions
+- ⚡ **Native C Engine**: Constant-time string comparison (anti-timing-attack), version-code ordering, and shared cipher-strength policy via zero-dependency FFI
+- 🛡️ **Crypto-Backed**: Randoms, HMAC-SHA256, HKDF, SHA-256 fingerprints, and Base64 DER decoding on top of `alya-lang/crypto`
 
 ---
 
@@ -26,41 +25,61 @@ Native TLS and SSL client, server, certificate verification and secure networkin
 
 ```
 tls/
-├── .alyalint               # Linter configuration (rules, exclusions, severity overrides)
-├── .editorconfig           # Uniform formatting rules across IDEs and editors
-├── .gitignore              # Ecosystem standard ignore filters
-├── .vscode/                # VS Code workspace settings, DAP launch configurations & tasks
-├── alya.toml               # Package manifest with dependencies and optional [build]
-├── c/                      # (Optional) Native C sources for zero-dependency FFI packages
+├── alya.toml               # Package manifest (depends on crypto)
+├── c/
+│   ├── tls.h               # Native helper declarations
+│   └── tls.c               # Constant-time compare, version & cipher policy
 ├── src/
-│   ├── lib.alya            # Public API facade (pub exports, re-exports & pipeline runners)
-│   ├── types.alya          # Data models, pub enums, pub structs, and struct methods
-│   ├── ffi.alya            # (Optional) Native extern "C" declarations
-│   └── core/               # Subdirectory module hierarchy
-│       └── formatter.alya  # Domain formatting routines, salutation builders & pattern matchers
+│   ├── lib.alya            # Public API facade & high-level constructors
+│   ├── types.alya          # TlsConfig, TlsCertificate, TlsSession, TlsContext
+│   ├── ffi.alya            # Native extern "C" declarations
+│   ├── core/
+│   │   ├── version.alya    # Version codes, labels, negotiation
+│   │   ├── cipher.alya     # Suite registry, strength, selection
+│   │   ├── record.alya     # Record framing, fragmentation, byte helpers
+│   │   ├── handshake.alya  # ClientHello, ServerHello, SNI/ALPN, Finished
+│   │   └── keys.alya       # PRF, master secret, key block, HKDF label
+│   ├── cert/
+│   │   ├── pem.alya        # PEM armor, DER extraction, fingerprints
+│   │   ├── x509.alya       # Minimal DER field scanner
+│   │   └── verify.alya     # Hostname, time, pinning, peer verdicts
+│   ├── client/
+│   │   └── client.alya     # tls_connect, tunnel I/O, mock sessions
+│   └── server/
+│       └── server.alya     # Listener lifecycle, hello inspection
 ├── examples/
-│   └── demo.alya           # Comprehensive runnable walkthrough of all package capabilities
+│   └── demo.alya           # Comprehensive runnable walkthrough
 ├── tests/
-│   └── test_basic.alya     # Automated test suite with 100% feature coverage
+│   ├── test_basic.alya     # Facade smoke tests
+│   ├── test_ffi.alya       # Native engine verification
+│   ├── test_version.alya   # Negotiation tests
+│   ├── test_cipher.alya    # Suite selection tests
+│   ├── test_record.alya    # Framing roundtrip tests
+│   ├── test_handshake.alya # Hello build/parse tests
+│   ├── test_keys.alya      # Key schedule tests
+│   ├── test_pem.alya       # PEM parsing tests
+│   ├── test_x509.alya      # Scanner + real-certificate vector
+│   ├── test_verify.alya    # Hostname/time/pin tests
+│   └── test_client_server.alya # Offline lifecycle tests
 └── benches/
-    └── bench_basic.alya    # Micro-benchmarks measuring performance and throughput
+    └── bench_basic.alya    # Micro-benchmarks (negotiation → PRF)
 ```
 
 > [!NOTE]
-> **Visibility & Modularity:** Symbols annotated with `pub` (`pub function`, `pub struct`, `pub enum`, `pub interface`) are exported to external consumers and re-exporting modules. Symbols without `pub` remain strictly internal to their declaring module, preventing symbol collisions and implementation leakage.
+> **Scope:** `v0.1.0` negotiates versions/suites over real TCP and verifies caller-supplied chains. Server-side key exchange and bulk record encryption build on `core/keys.alya` + `crypto` AEAD in the next milestone — the handshake stub never claims encryption it does not perform.
 
 ---
 
 ## 📦 Installation
 
-Add `tls` to the `[dependencies]` section in your `alya.toml`:
+Add `tls` to your project's `alya.toml`:
 
 ```toml
 [dependencies]
 tls = { git = "https://github.com/alya-lang/tls", branch = "main" }
 ```
 
-Or install it directly using the Alya package CLI:
+Or install it directly via the `alya` CLI:
 
 ```bash
 alya add tls --git https://github.com/alya-lang/tls --branch main
@@ -71,22 +90,51 @@ alya install
 
 ## 🚀 Quick Start
 
+### 1. Secure client config & mock session
+
 ```alya
-import "tls" as pkg
+import "tls" as tls
 
 function main()
-    # 1. Basic facade call with default parameter
-    let greeting = pkg::hello()
-    say f"Greeting:  {greeting}"
+    let cfg = tls::config("example.com")
+    say "Policy: " + tls::version_to_string(cfg.min_version) + "+"
 
-    # 2. Struct configuration with priority, style, and methods
-    let cfg = pkg::new_config("Community", 5, pkg::TlsPriority.High, pkg::TlsStyle.Formal)
-    say f"Summary:   {cfg.summary()}"
-    say f"Formatted: {pkg::core_format_custom(cfg)}"
+    # Offline session (no I/O) for framing/policy flows
+    let ctx = tls::tls_mock_establish(cfg)
+    say tls::session_summary(ctx.session)
+end
 
-    # 3. Processing pipeline returning Result model
-    let res = pkg::process("Analytics", 3, pkg::TlsPriority.Critical)
-    say f"Outcome:   {res.message}"
+main()
+```
+
+### 2. Live negotiation (real TCP + hello exchange)
+
+```alya
+import "tls" as tls
+
+function main()
+    let cfg = tls::config("example.com", 443)
+    let ctx = tls::connect(cfg)
+    if ctx.is_ok() == 0
+        say "Handshake failed: " + ctx.last_error
+        return
+    end
+    say tls::session_summary(ctx.session)
+    tls::close(ctx)
+end
+
+main()
+```
+
+### 3. Certificate verification with pinning
+
+```alya
+import "tls" as tls
+
+function main()
+    let cert = tls::parse_certificate_pem(read_file("server.pem"))
+    let verdict = tls::verify_peer(cert, "example.com", tls::TlsVerifyMode.Required, "20260101000000Z", "ab:cd:...")
+    say "Verified: " + str(verdict["ok"]) + " (" + verdict["detail"] + ")"
 end
 
 main()
@@ -96,70 +144,78 @@ main()
 
 ## 📖 API Reference
 
-| Symbol | Visibility | Description |
-|---|---|---|
-| `hello(name = "World")` | `pub function` | Returns a formatted greeting string. Defaults to `"World"` if null or empty. |
-| `new_config(name, count, priority, style)` | `pub function` | Factory constructing a `TlsConfig` with sensible defaults. |
-| `make_config(name, count, priority, style, enabled, tags)` | `pub function` | Full constructor for `TlsConfig`. |
-| `process(label, count, priority)` | `pub function` | Runs processing pipeline, returning an `ok_result` `TlsResult`. |
-| `process_batch(labels)` | `pub function` | Formats an array of labels in batch, returning an array of strings. |
-| `ok_result(value, message)` | `pub function` | Constructs a successful `TlsResult` container (`status = 0`). |
-| `error_result(message, errors)` | `pub function` | Constructs a failed `TlsResult` container (`status = 1`). |
-| `make_stats(total, passed, failed, skipped)` | `pub function` | Constructs a `TlsStats` metrics record. |
-| `format_summary(cfg)` | `pub function` | Formats summary of a config instance (satisfies `Summarizable`). |
-| `format_description(cfg)` | `pub function` | Formats description of a config instance (satisfies `Describable`). |
-| `format_config(config)` | `pub function` | Multi-field formatter producing descriptive overview of a `TlsConfig`. |
-| `format_result(result)` | `pub function` | Formats a `TlsResult` into `[OK]` or `[ERROR]` status line. |
-| `format_stats(stats)` | `pub function` | Formats total checked items and success rate percentage. |
-| `clamp(n, min_val, max_val)` | `pub function` | Clamps an integer value to the closed range `[min_val, max_val]`. |
-| `pluralize(n, singular, plural)` | `pub function` | Pattern-matches count to return singular or plural noun form. |
-| `repeat_string(label, count)` | `pub function` | Repeats a string into an array of `count` items. |
-| `Summarizable` | `pub interface` | Structural contract requiring `summary(self) -> string`. |
-| `Describable` | `pub interface` | Structural contract requiring `describe(self) -> string` and `is_valid(self) -> int`. |
-| `TlsStatus` | `pub enum` | Lifecycle status codes (`Pending = 0`, `Active = 1`, `Archived = 2`, `Error = 3`). |
-| `TlsPriority` | `pub enum` | Priority tiers (`Low = 0`, `Normal = 1`, `High = 2`, `Critical = 3`). |
-| `TlsStyle` | `pub enum` | Presentation styles (`Standard = 0`, `Formal = 1`, `Casual = 2`). |
-| `TlsConfig` | `pub struct` | Primary configuration model (`name`, `count`, `priority`, `style`, `enabled`, `tags`). |
-| `TlsConfig.summary()` | `pub method` | Single-line formatted summary (satisfies `Summarizable`). |
-| `TlsConfig.describe()` | `pub method` | Detailed multi-field description (satisfies `Describable`). |
-| `TlsConfig.is_valid()` | `pub method` | Validation guard returning 1 if valid, 0 otherwise. |
-| `TlsConfig.is_enabled()` | `pub method` | Returns 1 if active, 0 if disabled. |
-| `TlsConfig.with_name(new_name)` | `pub method` | Immutable copy with updated name. |
-| `TlsConfig.with_priority(new_prio)` | `pub method` | Immutable copy with updated priority tier. |
-| `TlsResult` | `pub struct` | Operation outcome model (`value`, `status`, `message`, `errors`). |
-| `TlsResult.is_ok()` | `pub method` | Returns 1 if successful (`status == 0`), 0 otherwise. |
-| `TlsResult.is_error()` | `pub method` | Returns 1 if error (`status != 0`), 0 otherwise. |
-| `TlsResult.unwrap_or(fallback)` | `pub method` | Returns message on success, or fallback on error. |
-| `TlsStats` | `pub struct` | Run statistics model (`total`, `passed`, `failed`, `skipped`). |
-| `TlsStats.total_checked()` | `pub method` | Sum of passed and failed items count. |
-| `TlsStats.success_rate()` | `pub method` | Computed percentage string (e.g. `"95%"`). |
+### Facade (`src/lib.alya`)
 
-> [!TIP]
-> **Internal Helpers & Documentation:** Public symbols are documented with `##` Markdown docstrings, enabling automatic API documentation generation via `alya doc`. Private functions such as `build_salutation` and `build_priority_label` in `src/core/formatter.alya` are not annotated with `pub` and remain encapsulated within their respective modules.
+| Function | Parameters | Description |
+|---|---|---|
+| `config(host, port)` | `host: string, port: int` | Secure client config (TLS 1.2+, verification required) |
+| `insecure_config(host, port)` | `host: string, port: int` | Dev config without verification (never production) |
+| `connect(cfg)` | `cfg: TlsConfig` | TCP dial + hello negotiation, never throws |
+| `close(ctx)` | `ctx: TlsContext` | Closes tunnel socket |
+| `server(port, host)` | `port: int, host: string` | Creates TLS server listener |
+| `version()` | — | Package version string |
+| `secure_compare(a, b)` | `a, b: string` | Constant-time compare via native engine |
+| `session_summary(sess)` | `sess: TlsSession` | One-line version/suite/SNI summary |
+
+### Versions & Suites (`core/version.alya`, `core/cipher.alya`)
+
+| Function | Parameters | Description |
+|---|---|---|
+| `version_negotiate(min_v, max_v, peer)` | `int, int, int` | Highest overlapping version, or 0 |
+| `version_to_string(code)` | `code: int` | `"TLSv1.2"` style label |
+| `version_is_secure(code)` | `code: int` | `1` for TLS 1.2/1.3 |
+| `cipher_select(client, server)` | `array, array` | Strongest common suite, or 0 |
+| `cipher_suite_name(suite)` | `suite: int` | IANA suite name |
+| `cipher_is_aead(suite)` | `suite: int` | `1` for AEAD suites |
+
+### Records & Handshake (`core/record.alya`, `core/handshake.alya`, `core/keys.alya`)
+
+| Function | Parameters | Description |
+|---|---|---|
+| `record_encode(type, ver, frag)` | `int, int, array` | Frames one TLS record |
+| `record_decode(data)` | `data: array` | Parses/validates one record |
+| `build_client_hello(cfg, suites)` | `cfg, array` | ClientHello with SNI/ALPN |
+| `parse_server_hello(body)` | `body: array` | Extracts version/random/suite |
+| `master_secret(pre, cli, srv)` | `array, array, array` | 48-byte TLS 1.2 master secret |
+| `key_block(master, srv, cli, len)` | `array, array, array, int` | Key expansion material |
+| `hkdf_expand_label(secret, label, ctx, len)` | `array, str, array, int` | TLS 1.3 key schedule step |
+
+### Certificates (`cert/pem.alya`, `cert/x509.alya`, `cert/verify.alya`)
+
+| Function | Parameters | Description |
+|---|---|---|
+| `pem_first_cert_der(pem)` | `pem: string` | DER bytes of first CERTIFICATE block |
+| `parse_certificate(der)` | `der: array` | Scans CN/SAN/validity/serial/fingerprint |
+| `parse_certificate_pem(pem)` | `pem: string` | PEM-to-summary shortcut |
+| `verify_hostname(cert, host)` | `cert, host: string` | SAN-first RFC 6125 match |
+| `verify_fingerprint(cert, pin)` | `cert, pin: string` | Constant-time pin compare |
+| `verify_peer(cert, host, mode, now, pin)` | `cert, host, int, str, str` | Full verdict map |
 
 ---
 
 ## 🧪 Running Tests & Benchmarks
 
-Run the automated test suite using `alya test`:
+Run all 11 test suites using `alya`:
 
 ```bash
 alya test
 ```
 
-Generate static API documentation:
+Run individual test files:
 
 ```bash
-alya doc . -o docs --markdown
+alya run tests/test_x509.alya
+alya run tests/test_handshake.alya
+alya run tests/test_verify.alya
 ```
 
-Run the benchmark suite:
+Run benchmarks:
 
 ```bash
 alya run benches/bench_basic.alya
 ```
 
-Run the example demo:
+Run the demo example:
 
 ```bash
 alya run examples/demo.alya
@@ -179,30 +235,29 @@ alya lint . --check
 
 ---
 
-### 💻 Developer Tooling & VS Code Integration
-
-This package comes preconfigured with recommended workspace settings and tasks for **Visual Studio Code**:
-- **LSP & Formatting**: Auto-formatting on save and real-time Language Server diagnostics via `alya-lang.vscode-alya`.
-- **DAP Debugging**: Launch configurations in `.vscode/launch.json` ready for interactive step-debugging via `F5`.
-- **Predefined Tasks**: Press `Ctrl+Shift+B` or run tasks (`Test`, `Lint`, `Format`, `Build Docs`) directly from the Command Palette.
-
----
-
 ## 🤝 Contributing
 
 Contributions are welcome! Please follow these steps:
 
 1. Fork the repository and clone it locally
-2. Install dependencies:
+2. Install the package tools:
    ```bash
    alya install
    ```
-3. Create your feature branch (`git checkout -b feature/my-feature`)
-4. Verify tests and formatting before opening a PR:
+3. Create your feature branch:
+   ```bash
+   git checkout -b feature/my-feature
+   ```
+4. Verify tests and code formatting before opening a PR:
    ```bash
    alya test
+   alya fmt . --check
    ```
-5. Commit your changes (`git commit -m "feat: add feature"`) and open a Pull Request
+5. Commit your changes:
+   ```bash
+   git commit -m "feat: add feature description"
+   ```
+6. Open a Pull Request on GitHub.
 
 ---
 

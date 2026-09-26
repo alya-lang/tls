@@ -1,0 +1,148 @@
+## PEM armor parsing and DER extraction (RFC 7468).
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Strips PEM headers, decodes the Base64 body via `crypto`, and computes
+## SHA-256 fingerprints for pinning.
+
+import "std/str"
+import "crypto" as crypto
+
+## Extracts the Base64 body for a PEM block label.
+##
+## ### Parameters
+## - `pem`: Full PEM text (or null).
+## - `label`: Block label (e.g. `"CERTIFICATE"`).
+##
+## ### Returns
+## Joined Base64 body string, or empty when the block is absent.
+pub function pem_body(pem, label: string) -> string
+    if pem is null or label is null
+        return ""
+    end
+    let open_m = "-----BEGIN " + label + "-----"
+    let close_m = "-----END " + label + "-----"
+    let start = index_of(pem, open_m)
+    if start < 0
+        return ""
+    end
+    let stop = index_of(pem, close_m)
+    if stop < 0 or stop <= start
+        return ""
+    end
+    let inner = substring(pem, start + len(open_m), stop - start - len(open_m))
+    let out = ""
+    let rows = lines(inner)
+    let i = 0
+    while i < len(rows)
+        let row = trim(rows[i])
+        if len(row) > 0
+            out = out + row
+        end
+        i += 1
+    end
+    return out
+end
+
+## Returns 1 when the text holds a PEM block with the given label.
+##
+## ### Parameters
+## - `pem`: Candidate PEM text.
+## - `label`: Block label (e.g. `"CERTIFICATE"`).
+##
+## ### Returns
+## `1` when both armor boundaries are present, `0` otherwise.
+pub function pem_has_block(pem, label: string) -> int
+    if pem_body(pem, label) == ""
+        return 0
+    end
+    return 1
+end
+
+## Decodes a PEM block into raw DER bytes.
+##
+## ### Parameters
+## - `pem`: Full PEM text.
+## - `label`: Block label (e.g. `"CERTIFICATE"`).
+##
+## ### Returns
+## DER byte array, or empty when decoding fails.
+pub function pem_to_der(pem, label: string) -> array
+    let body = pem_body(pem, label)
+    if body == ""
+        return []
+    end
+    return crypto::base64_decode_bytes(body)
+end
+
+## Decodes the first certificate from a PEM bundle.
+##
+## ### Parameters
+## - `pem`: PEM text possibly holding several blocks.
+##
+## ### Returns
+## DER byte array of the first `CERTIFICATE` block, or empty.
+pub function pem_first_cert_der(pem) -> array
+    return pem_to_der(pem, "CERTIFICATE")
+end
+
+## Counts certificate blocks inside a PEM bundle.
+##
+## ### Parameters
+## - `pem`: PEM bundle text.
+##
+## ### Returns
+## Number of `CERTIFICATE` blocks found.
+pub function pem_cert_count(pem) -> int
+    if pem is null
+        return 0
+    end
+    let marker = "-----BEGIN CERTIFICATE-----"
+    let count = 0
+    let rest = pem
+    while 1
+        let idx = index_of(rest, marker)
+        if idx < 0
+            break
+        end
+        count += 1
+        rest = substring(rest, idx + len(marker), len(rest) - idx - len(marker))
+    end
+    return count
+end
+
+## Computes the lowercase hex SHA-256 fingerprint of DER bytes.
+##
+## ### Parameters
+## - `der`: DER byte array.
+##
+## ### Returns
+## 64-character fingerprint string, or empty for empty input.
+pub function der_fingerprint_sha256(der) -> string
+    if der is null or len(der) == 0
+        return ""
+    end
+    return crypto::bytes_to_hex(crypto::sha256_bytes(der))
+end
+
+## Normalizes a fingerprint for comparison (lowercase, no separators).
+##
+## ### Parameters
+## - `fp`: Fingerprint with optional `:`/` ` separators.
+##
+## ### Returns
+## Normalized lowercase hex string.
+pub function fingerprint_normalize(fp) -> string
+    if fp is null
+        return ""
+    end
+    let out = ""
+    let i = 0
+    while i < len(fp)
+        let ch = char_at(fp, i)
+        if ch != ":" and ch != " " and ch != "-"
+            out = out + lower(ch)
+        end
+        i += 1
+    end
+    return out
+end

@@ -1,0 +1,172 @@
+## TLS cipher suite registry and selection.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Suite strength ranking delegates to the bundled C engine so both Alya
+## and native callers share one policy table.
+
+import "../types.alya"
+import "../ffi.alya"
+
+## TLS 1.3 AES-128-GCM with SHA-256.
+pub const SUITE_AES_128_GCM_SHA256 = 4865
+
+## TLS 1.3 AES-256-GCM with SHA-384.
+pub const SUITE_AES_256_GCM_SHA384 = 4866
+
+## TLS 1.3 ChaCha20-Poly1305 with SHA-256.
+pub const SUITE_CHACHA20_POLY1305_SHA256 = 4867
+
+## ECDHE-RSA AES-128-GCM with SHA-256 (TLS 1.2).
+pub const SUITE_ECDHE_RSA_AES128_GCM_SHA256 = 49199
+
+## ECDHE-RSA AES-256-GCM with SHA-384 (TLS 1.2).
+pub const SUITE_ECDHE_RSA_AES256_GCM_SHA384 = 49200
+
+## ECDHE-RSA ChaCha20-Poly1305 with SHA-256 (TLS 1.2).
+pub const SUITE_ECDHE_RSA_CHACHA20_POLY1305 = 52392
+
+## ECDHE-RSA AES-128-CBC with SHA-256 (TLS 1.2, no AEAD).
+pub const SUITE_ECDHE_RSA_AES128_SHA256 = 49191
+
+## RSA AES-128-GCM with SHA-256 (TLS 1.2, no forward secrecy).
+pub const SUITE_RSA_AES128_GCM_SHA256 = 156
+
+## Returns the IANA name for a cipher suite id.
+##
+## ### Parameters
+## - `suite`: Numeric cipher suite id.
+##
+## ### Returns
+## Canonical name, or `"TLS-UNKNOWN"` when unmapped.
+pub function cipher_suite_name(suite: int) -> string
+    if suite == SUITE_AES_128_GCM_SHA256
+        return "TLS_AES_128_GCM_SHA256"
+    end
+    if suite == SUITE_AES_256_GCM_SHA384
+        return "TLS_AES_256_GCM_SHA384"
+    end
+    if suite == SUITE_CHACHA20_POLY1305_SHA256
+        return "TLS_CHACHA20_POLY1305_SHA256"
+    end
+    if suite == SUITE_ECDHE_RSA_AES128_GCM_SHA256
+        return "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+    end
+    if suite == SUITE_ECDHE_RSA_AES256_GCM_SHA384
+        return "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+    end
+    if suite == SUITE_ECDHE_RSA_CHACHA20_POLY1305
+        return "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+    end
+    if suite == SUITE_ECDHE_RSA_AES128_SHA256
+        return "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+    end
+    if suite == SUITE_RSA_AES128_GCM_SHA256
+        return "TLS_RSA_WITH_AES_128_GCM_SHA256"
+    end
+    return "TLS-UNKNOWN"
+end
+
+## Ranks a suite by strength using the shared native policy table.
+##
+## ### Parameters
+## - `suite`: Numeric cipher suite id.
+##
+## ### Returns
+## 3 (modern AEAD+PFS), 2 (strong CBC+PFS), 1 (legacy), or 0 (unknown).
+pub function cipher_strength(suite: int) -> int
+    return alya_tls_cipher_strength(suite)
+end
+
+## Returns 1 when the suite uses authenticated encryption.
+##
+## ### Parameters
+## - `suite`: Numeric cipher suite id.
+##
+## ### Returns
+## `1` for AEAD suites, `0` otherwise.
+pub function cipher_is_aead(suite: int) -> int
+    return alya_tls_is_aead(suite)
+end
+
+## Returns 1 when the suite must be rejected by secure policy.
+##
+## ### Parameters
+## - `suite`: Numeric cipher suite id.
+##
+## ### Returns
+## `1` for unknown or legacy non-PFS suites, `0` otherwise.
+pub function cipher_is_weak(suite: int) -> int
+    let s = cipher_strength(suite)
+    if s <= 1
+        return 1
+    end
+    return 0
+end
+
+## Returns the default suite preference ordered strongest-first.
+##
+## ### Returns
+## Array of suite ids with TLS 1.3 suites leading.
+pub function cipher_default_suites() -> array
+    return [SUITE_AES_128_GCM_SHA256, SUITE_AES_256_GCM_SHA384, SUITE_CHACHA20_POLY1305_SHA256, SUITE_ECDHE_RSA_AES128_GCM_SHA256, SUITE_ECDHE_RSA_AES256_GCM_SHA384, SUITE_ECDHE_RSA_CHACHA20_POLY1305]
+end
+
+## Selects the strongest suite offered by both endpoints.
+##
+## ### Parameters
+## - `client_suites`: Client preference array (may be null/empty).
+## - `server_suites`: Server preference array (may be null/empty).
+##
+## ### Returns
+## Negotiated suite id, or 0 when there is no overlap.
+pub function cipher_select(client_suites, server_suites) -> int
+    let mine = client_suites
+    if mine is null or len(mine) == 0
+        mine = cipher_default_suites()
+    end
+    let theirs = server_suites
+    if theirs is null or len(theirs) == 0
+        theirs = cipher_default_suites()
+    end
+    let best = 0
+    let best_rank = -1
+    let i = 0
+    while i < len(mine)
+        let cand = mine[i]
+        let j = 0
+        while j < len(theirs)
+            if theirs[j] == cand
+                let rank = cipher_strength(cand)
+                if rank > best_rank
+                    best_rank = rank
+                    best = cand
+                end
+            end
+            j += 1
+        end
+        i += 1
+    end
+    return best
+end
+
+## Filters a suite list down to AEAD-only entries.
+##
+## ### Parameters
+## - `suites`: Candidate suite id array.
+##
+## ### Returns
+## New array holding only AEAD suites.
+pub function cipher_filter_aead(suites) -> array
+    let out = []
+    if suites is null
+        return out
+    end
+    let i = 0
+    while i < len(suites)
+        if cipher_is_aead(suites[i]) == 1
+            out.push(suites[i])
+        end
+        i += 1
+    end
+    return out
+end

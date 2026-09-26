@@ -1,0 +1,156 @@
+## X.509 scanner tests for tls
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function str_bytes(s: string) -> array
+    let out = []
+    let i = 0
+    while i < len(s)
+        out.push(ord(char_at(s, i)))
+        i += 1
+    end
+    return out
+end
+
+function cn_attr(name: string) -> array
+    let oid = [6, 3, 85, 4, 3]
+    let sb = str_bytes(name)
+    let attr = []
+    let i = 0
+    while i < len(oid)
+        attr.push(oid[i])
+        i += 1
+    end
+    attr.push(19)
+    attr.push(len(sb))
+    let j = 0
+    while j < len(sb)
+        attr.push(sb[j])
+        j += 1
+    end
+    return attr
+end
+
+function time_attr(stamp: string) -> array
+    let sb = str_bytes(stamp)
+    let out = [23, len(sb)]
+    let i = 0
+    while i < len(sb)
+        out.push(sb[i])
+        i += 1
+    end
+    return out
+end
+
+function sample_der() -> array
+    let der = [48, 100, 2, 1, 42]
+    let a = cn_attr("Test")
+    let i = 0
+    while i < len(a)
+        der.push(a[i])
+        i += 1
+    end
+    let t1 = time_attr("230101000000Z")
+    let k = 0
+    while k < len(t1)
+        der.push(t1[k])
+        k += 1
+    end
+    let t2 = time_attr("250101000000Z")
+    let m = 0
+    while m < len(t2)
+        der.push(t2[m])
+        m += 1
+    end
+    let b = cn_attr("example")
+    let n = 0
+    while n < len(b)
+        der.push(b[n])
+        n += 1
+    end
+    let san_oid = [6, 3, 85, 29, 17]
+    let q = 0
+    while q < len(san_oid)
+        der.push(san_oid[q])
+        q += 1
+    end
+    let dns1 = str_bytes("example.com")
+    der.push(130)
+    der.push(len(dns1))
+    let d = 0
+    while d < len(dns1)
+        der.push(dns1[d])
+        d += 1
+    end
+    let dns2 = str_bytes("*.example.org")
+    der.push(130)
+    der.push(len(dns2))
+    let e = 0
+    while e < len(dns2)
+        der.push(dns2[e])
+        e += 1
+    end
+    return der
+end
+
+function real_cert_pem() -> string
+    return "-----BEGIN CERTIFICATE-----\nMIIDNDCCAhygAwIBAgIUOvpBWa+DeTG5ChpC2n5DyG4b7D4wDQYJKoZIhvcNAQEL\nBQAwFjEUMBIGA1UEAwwLZXhhbXBsZS5jb20wHhcNMjYwOTI2MjAzOTE3WhcNMjYx\nMDI2MjAzOTE3WjAWMRQwEgYDVQQDDAtleGFtcGxlLmNvbTCCASIwDQYJKoZIhvcN\nAQEBBQADggEPADCCAQoCggEBAOnji8qxUMbnIKU1E05h8R7VjPjuZ0SHLcCWxl0r\nnyfB1RaF6S2Csy7jxsnzseATaaTe2xOdEJmYp2hf5scW6Ac+J9LIdXZpuYQ8QIAx\nk8TU3l8/6LkoUs/trqwrm41QGBo2kbd7A0gbJD6xjt6rVmBVyeDhys7aa68aOVGb\nbam+eKwhd0fkHFWgfy+rIWNhF7A3PPBLB2YKsfAH0piQm9lcDXbOUYawQi6pc+ql\nM+OSvDU8lZVL4tgJDFEvlejnUldke6XhQQ9TIGQDyzMVhcmcmKvyIpRvAP/i14qY\n7diS4CdTxl6EHYKCg2csy4wMkxINFF2C+v4vge+LKi7yvDcCAwEAAaN6MHgwHQYD\nVR0OBBYEFDaYXtObDMSnmMuGUU4KhyczpAkOMB8GA1UdIwQYMBaAFDaYXtObDMSn\nmMuGUU4KhyczpAkOMA8GA1UdEwEB/wQFMAMBAf8wJQYDVR0RBB4wHIILZXhhbXBs\nZS5jb22CDSouZXhhbXBsZS5vcmcwDQYJKoZIhvcNAQELBQADggEBAEWIbXsK05WN\nm+OR7ufhSgJ4SPMhJqnEf4onSmXzpeiawYqQlg5JNICOHfHWX6SDy1DqHfWLQGX/\nw4yMbCkbq2jfmZJ1S7qyXYL1SSEBS/H4XemfHyVjiqeHg1O+VefEY4yfVYortsDt\nwjacXyWAr8JaBYnugi9pix7P//+qARnQTjWTh5NF+QEZhIt7eZ7np85Ko3wmfZ4l\nNFTwAoV1gmlcELlydPUSUM552tPk2h0U6Hp6jIErBgwpOXYYT/Z/Tje/TmA1s3r4\n0Th+KNEncNXBD71aQaPS82lUYePUh61ibxoJ9E7aQ5K8isCL1YkxiBKEhEsYT+PG\nWPcM6St74+w=\n-----END CERTIFICATE-----\n"
+end
+
+function main()
+    test_suite("TLS X509 Tests")
+    let r = runner_new()
+
+    let t = tls::tlv_at([48, 3, 1, 2, 3], 0)
+    runner_assert_str_eq(r, t["error"], "", "tlv clean")
+    runner_assert_eq(r, t["tag"], 48, "tlv tag")
+    runner_assert_eq(r, t["length"], 3, "tlv length")
+    let bad = tls::tlv_at([48], 0)
+    runner_assert_true(r, bad["error"] != "", "short tlv errors")
+
+    runner_assert_eq(r, tls::der_find([1, 2, 3, 4], [3, 4]), 2, "der_find hit")
+    runner_assert_eq(r, tls::der_find([1, 2], [9]), -1, "der_find miss")
+
+    runner_assert_str_eq(r, tls::normalize_time_stamp("230101000000Z"), "20230101000000Z", "utc pivot 20xx")
+    runner_assert_str_eq(r, tls::normalize_time_stamp("990101000000Z"), "19990101000000Z", "utc pivot 19xx")
+    runner_assert_str_eq(r, tls::normalize_time_stamp("junk"), "", "bad stamp empty")
+
+    let cert = tls::parse_certificate(sample_der())
+    runner_assert_str_eq(r, cert.issuer_cn, "Test", "issuer cn")
+    runner_assert_str_eq(r, cert.subject_cn, "example", "subject cn")
+    runner_assert_eq(r, len(cert.san), 2, "two san entries")
+    runner_assert_str_eq(r, cert.san[0], "example.com", "san exact")
+    runner_assert_str_eq(r, cert.not_before, "20230101000000Z", "not before")
+    runner_assert_str_eq(r, cert.not_after, "20250101000000Z", "not after")
+    runner_assert_str_eq(r, cert.serial_hex, "2a", "serial hex")
+    runner_assert_eq(r, len(cert.fingerprint_sha256), 64, "fingerprint len")
+    runner_assert_true(r, cert.der_len > 0, "der len set")
+
+    let empty = tls::parse_certificate([])
+    runner_assert_str_eq(r, empty.subject_cn, "", "empty cert no cn")
+
+    # ── Real-world vector: openssl self-signed cert ──
+    let real_pem = real_cert_pem()
+    runner_assert_eq(r, tls::pem_cert_count(real_pem), 1, "real pem one block")
+    let real = tls::parse_certificate_pem(real_pem)
+    runner_assert_str_eq(r, real.subject_cn, "example.com", "real subject cn")
+    runner_assert_str_eq(r, real.issuer_cn, "example.com", "real issuer cn")
+    runner_assert_eq(r, len(real.san), 2, "real san count")
+    runner_assert_str_eq(r, real.san[0], "example.com", "real san exact")
+    runner_assert_str_eq(r, real.san[1], "*.example.org", "real san wildcard")
+    runner_assert_str_eq(r, real.not_before, "20260926203917Z", "real not_before")
+    runner_assert_str_eq(r, real.not_after, "20261026203917Z", "real not_after")
+    runner_assert_str_eq(r, real.fingerprint_sha256, "9ffcbaffd6fa6ede827c50a3e185c28eea6507e381a06d898d3343d1a1a3d441", "real fingerprint")
+    runner_assert_eq(r, tls::verify_hostname(real, "api.example.org"), 1, "real wildcard verifies")
+    let peer = tls::verify_peer(real, "example.com", tls::TlsVerifyMode.Required, "20261001000000Z", "9ffcbaffd6fa6ede827c50a3e185c28eea6507e381a06d898d3343d1a1a3d441")
+    runner_assert_eq(r, peer["ok"], 1, "real peer verifies with pin")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

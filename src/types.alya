@@ -1,262 +1,290 @@
 ## tls Types & Data Structures
 ##
 ## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
-## Defines configuration models, enumerations, structural interfaces, and associated methods
-## showcasing the full range of modern Alya type system capabilities.
+## Defines TLS protocol versions, content types, handshake roles, certificate
+## models, session state, and connection contexts shared by every submodule.
 
 # ───────────────────────────────────────────────────────────────
-# Structural Interfaces (Duck Typing)
+# Protocol Enumerations
 # ───────────────────────────────────────────────────────────────
 
-## Public interface for objects capable of producing a formatted string summary.
+## TLS protocol version codes (wire value major/minor combined).
 ##
-## Any struct implementing a `summary(self) -> string` method implicitly
-## satisfies this interface via Alya's structural duck-typing runtime.
-pub interface Summarizable
-    function summary(self) -> string
+## Values match the on-wire `ProtocolVersion` (e.g. TLS 1.2 = 0x0303).
+pub enum TlsVersion
+    Tls10 = 769,
+    Tls11 = 770,
+    Tls12 = 771,
+    Tls13 = 772
 end
 
-## Public interface for objects that provide detailed status descriptions and validation.
-##
-## Structs implementing `describe(self) -> string` and `is_valid(self) -> int`
-## satisfy this contract without explicit inheritance declarations.
-pub interface Describable
-    function describe(self) -> string
-    function is_valid(self) -> int
+## TLS record layer content types (RFC 8446 section 5.1).
+pub enum TlsContentType
+    ChangeCipherSpec = 20,
+    Alert = 21,
+    Handshake = 22,
+    ApplicationData = 23
 end
 
-# ───────────────────────────────────────────────────────────────
-# Enumerations
-# ───────────────────────────────────────────────────────────────
-
-## Public enumeration of entity lifecycle status states.
-##
-## Defines sequential status codes from pending to completed or error states.
-pub enum TlsStatus
-    Pending = 0,
-    Active = 1,
-    Archived = 2,
-    Error = 3
+## TLS handshake message types (RFC 8446 section 4).
+pub enum TlsHandshakeType
+    ClientHello = 1,
+    ServerHello = 2,
+    Certificate = 11,
+    ServerHelloDone = 14,
+    ClientKeyExchange = 16,
+    Finished = 20
 end
 
-## Public enumeration of operational priority levels.
-##
-## Used to determine dispatch scheduling, queue ordering, and urgency tiers.
-pub enum TlsPriority
-    Low = 0,
-    Normal = 1,
-    High = 2,
-    Critical = 3
+## TLS alert severity levels.
+pub enum TlsAlertLevel
+    Warning = 1,
+    Fatal = 2
 end
 
-## Public enumeration of greeting and presentation styles.
+## Common TLS alert descriptions.
+pub enum TlsAlertDescription
+    CloseNotify = 0,
+    UnexpectedMessage = 10,
+    BadRecordMac = 20,
+    HandshakeFailure = 40,
+    BadCertificate = 42,
+    CertificateExpired = 45,
+    UnknownCa = 48,
+    InternalError = 80
+end
+
+## Peer certificate verification strictness.
 ##
-## Governs formatting salutations, prefixes, and stylistic tone.
-pub enum TlsStyle
-    Standard = 0,
-    Formal = 1,
-    Casual = 2
+## - `None`: accept any peer without verification (testing only).
+## - `Optional`: verify when a certificate is presented.
+## - `Required`: fail the handshake without a valid chain.
+pub enum TlsVerifyMode
+    None = 0,
+    Optional = 1,
+    Required = 2
+end
+
+## Connection lifecycle states.
+pub enum TlsState
+    Closed = 0,
+    TcpConnected = 1,
+    HandshakeStarted = 2,
+    Handshaked = 3,
+    Established = 4,
+    Failed = 5
+end
+
+## Endpoint role in the handshake.
+pub enum TlsRole
+    Client = 0,
+    Server = 1
 end
 
 # ───────────────────────────────────────────────────────────────
 # Data Models (Structs)
 # ───────────────────────────────────────────────────────────────
 
-## Configuration data model holding execution parameters and metadata.
-##
-## Encapsulates target identity, counter thresholds, priority tier, stylistic
-## mode, active status flag, and associated classification tags.
+## Client/server configuration for TLS connections.
 ##
 ## ### Fields
-## - `name`: Validated entity identifier string.
-## - `count`: Repetition limit or processing counter.
-## - `priority`: Operational priority level (`TlsPriority` enum value).
-## - `style`: Presentation style variant (`TlsStyle` enum value).
-## - `enabled`: Activation flag (1 for active, 0 for inactive).
-## - `tags`: Categorical metadata tags array.
+## - `host`: Remote hostname or IP for SNI and verification.
+## - `port`: Remote TCP port (443 for HTTPS).
+## - `sni`: Server Name Indication value (defaults to `host`).
+## - `alpn`: Negotiated application protocols (e.g. `["h2", "http/1.1"]`).
+## - `verify_mode`: Peer verification strictness (`TlsVerifyMode`).
+## - `min_version`: Lowest acceptable version (`TlsVersion` code).
+## - `max_version`: Highest acceptable version (`TlsVersion` code).
+## - `timeout_ms`: TCP and handshake timeout in milliseconds.
+## - `ca_pem`: Trusted CA bundle in PEM format (or empty for OS default).
+## - `cert_pem`: Local certificate chain in PEM format (server side).
+## - `key_pem`: Local private key in PEM format (server side).
+## - `cipher_allowlist`: Allowed cipher suite ids (empty means defaults).
 pub struct TlsConfig
-    name: string,
-    count: int,
-    priority: int,
-    style: int,
-    enabled: int,
-    tags: array
+    host: string,
+    port: int,
+    sni: string,
+    alpn: array,
+    verify_mode: int,
+    min_version: int,
+    max_version: int,
+    timeout_ms: int,
+    ca_pem: string,
+    cert_pem: string,
+    key_pem: string,
+    cipher_allowlist: array
 end
 
-## Container representing the outcome of an operation.
+## Parsed peer certificate summary.
 ##
-## Holds an optional payload value, numeric status code, informational message,
-## and accumulated error diagnostic messages.
+## Produced by the minimal X.509 scanner in `cert/x509.alya`. Stores the
+## fields required for hostname, time, and fingerprint-pin verification.
 ##
 ## ### Fields
-## - `value`: Result payload (any type, or null on failure).
-## - `status`: Outcome code (0 for success, non-zero for errors).
-## - `message`: Human-readable summary or error explanation.
-## - `errors`: Diagnostic error messages array.
-pub struct TlsResult
-    value,
-    status: int,
-    message: string,
-    errors: array
+## - `subject`: Full subject distinguished name string.
+## - `issuer`: Full issuer distinguished name string.
+## - `subject_cn`: Subject common name (OID 2.5.4.3).
+## - `issuer_cn`: Issuer common name.
+## - `san`: Subject Alternative Name DNS entries array.
+## - `serial_hex`: Certificate serial number as lowercase hex.
+## - `not_before`: Validity start (`YYYYMMDDHHMMSSZ` normalized).
+## - `not_after`: Validity end (`YYYYMMDDHHMMSSZ` normalized).
+## - `fingerprint_sha256`: Lowercase hex SHA-256 over DER bytes.
+## - `der_len`: Raw DER byte length.
+pub struct TlsCertificate
+    subject: string,
+    issuer: string,
+    subject_cn: string,
+    issuer_cn: string,
+    san: array,
+    serial_hex: string,
+    not_before: string,
+    not_after: string,
+    fingerprint_sha256: string,
+    der_len: int
 end
 
-## Aggregated run statistics tracking test, processing, or batch metrics.
-##
-## Records total observed items, successes, failures, and skipped items.
+## Negotiated session parameters.
 ##
 ## ### Fields
-## - `total`: Total processed items count.
-## - `passed`: Succeeded items count.
-## - `failed`: Failed items count.
-## - `skipped`: Skipped items count.
-pub struct TlsStats
-    total: int,
-    passed: int,
-    failed: int,
-    skipped: int
+## - `id_hex`: Session identifier as lowercase hex (may be empty).
+## - `version`: Negotiated version code (`TlsVersion`).
+## - `cipher_suite`: Negotiated cipher suite id.
+## - `sni`: Server name used during negotiation.
+## - `alpn`: Protocol selected by the server (or empty).
+## - `state`: Session state (`TlsState`).
+## - `peer_fingerprint`: Peer certificate SHA-256 fingerprint (or empty).
+## - `created_ms`: Session creation timestamp (`clock_ms()`).
+pub struct TlsSession
+    id_hex: string,
+    version: int,
+    cipher_suite: int,
+    sni: string,
+    alpn: string,
+    state: int,
+    peer_fingerprint: string,
+    created_ms: int
 end
 
-# ───────────────────────────────────────────────────────────────
-# Private Helper Functions
-# ───────────────────────────────────────────────────────────────
-
-# Internal sanitizer ensuring a non-empty, non-null string fallback.
-function sanitize_text_internal(text, fallback: string) -> string
-    return when
-        text is null => fallback
-        text == ""   => fallback
-        else         => text
-    end
-end
-
-# Formats integer division as a percentage string, clamping denominator zero.
-function format_percent_internal(passed: int, total: int) -> string
-    if total <= 0
-        return "0%"
-    end
-    let pct = (passed * 100) / total
-    return "{pct}%"
-end
-
-# ───────────────────────────────────────────────────────────────
-# Public Sanitization and Factory Constructors
-# ───────────────────────────────────────────────────────────────
-
-## Validates and sanitizes a candidate name string.
+## Live connection context binding config, session, and socket.
 ##
-## Replaces null or empty strings with the default `"World"` fallback.
+## ### Fields
+## - `config`: Active `TlsConfig` snapshot.
+## - `session`: Current `TlsSession` snapshot.
+## - `sock`: Underlying TCP socket handle (-1 when closed).
+## - `state`: Connection state (`TlsState`).
+## - `last_error`: Human-readable failure reason (empty on success).
+pub struct TlsContext
+    config,
+    session,
+    sock: int,
+    state: int,
+    last_error: string
+end
+
+# ───────────────────────────────────────────────────────────────
+# Factory Constructors
+# ───────────────────────────────────────────────────────────────
+
+## Builds a validated client configuration with secure defaults.
+##
+## Defaults enforce TLS 1.2 minimum, 10s timeout, and required peer
+## verification. Pass `TlsVerifyMode.None` explicitly for local testing.
 ##
 ## ### Parameters
-## - `name`: The candidate name value to sanitize.
-##
-## ### Returns
-## The validated string value, or `"World"` if empty or null.
-##
-## ### Examples
-## ```alya
-## let clean = sanitize_name(null) # "World"
-## let user = sanitize_name("Alice") # "Alice"
-## ```
-pub function sanitize_name(name) -> string
-    return sanitize_text_internal(name, "World")
-end
-
-## Factory constructor creating a validated `TlsConfig` instance.
-##
-## Sanitizes the input name and sets sensible defaults for optional fields.
-##
-## ### Parameters
-## - `name`: Entity identifier name. Defaults to `"World"`.
-## - `count`: Counter or repetition limit. Defaults to `1`.
-## - `priority`: Priority tier. Defaults to `TlsPriority.Normal`.
-## - `style`: Presentation style variant. Defaults to `TlsStyle.Standard`.
-## - `enabled`: Active flag. Defaults to `1`.
-## - `tags`: Categorization tags array. Defaults to `[]`.
+## - `host`: Remote hostname used for SNI and verification.
+## - `port`: Remote TCP port. Defaults to `443`.
+## - `verify_mode`: Verification strictness. Defaults to `Required`.
 ##
 ## ### Returns
 ## A fully initialized `TlsConfig` instance.
-##
-## ### Examples
-## ```alya
-## let cfg = make_config("Alice", 3, TlsPriority.High)
-## ```
-pub function make_config(name = "World", count: int = 1, priority: int = TlsPriority.Normal, style: int = TlsStyle.Standard, enabled: int = 1, tags: array = []) -> TlsConfig
-    let valid_name = sanitize_name(name)
+pub function tls_config_new(host: string, port: int = 443, verify_mode: int = TlsVerifyMode.Required) -> TlsConfig
+    let h = host
+    if h is null or h == ""
+        h = "localhost"
+    end
+    let p = port
+    if p <= 0
+        p = 443
+    end
     return TlsConfig {
-        name: valid_name,
-        count: count,
-        priority: priority,
-        style: style,
-        enabled: enabled,
-        tags: tags
+        host: h,
+        port: p,
+        sni: h,
+        alpn: ["h2", "http/1.1"],
+        verify_mode: verify_mode,
+        min_version: TlsVersion.Tls12,
+        max_version: TlsVersion.Tls13,
+        timeout_ms: 10000,
+        ca_pem: "",
+        cert_pem: "",
+        key_pem: "",
+        cipher_allowlist: []
     }
 end
 
-## Factory constructor creating a successful `TlsResult`.
-##
-## ### Parameters
-## - `value`: The success payload to encapsulate.
-## - `message`: Descriptive success message string. Defaults to `"OK"`.
+## Builds an empty certificate placeholder (no fields parsed).
 ##
 ## ### Returns
-## A `TlsResult` with status `0` and empty errors array.
-##
-## ### Examples
-## ```alya
-## let res = ok_result("Processed data", "Success")
-## ```
-pub function ok_result(value, message: string = "OK") -> TlsResult
-    return TlsResult {
-        value: value,
-        status: 0,
-        message: message,
-        errors: []
+## A zero-value `TlsCertificate` with empty strings and arrays.
+pub function tls_cert_empty() -> TlsCertificate
+    return TlsCertificate {
+        subject: "",
+        issuer: "",
+        subject_cn: "",
+        issuer_cn: "",
+        san: [],
+        serial_hex: "",
+        not_before: "",
+        not_after: "",
+        fingerprint_sha256: "",
+        der_len: 0
     }
 end
 
-## Factory constructor creating a failed `TlsResult`.
+## Builds a new session in the `Closed` state.
 ##
 ## ### Parameters
-## - `message`: Descriptive error message string.
-## - `errors`: Diagnostic error details array. Defaults to `[]`.
+## - `sni`: Server name tied to this session. Defaults to `""`.
 ##
 ## ### Returns
-## A `TlsResult` with status `1` and null value payload.
-##
-## ### Examples
-## ```alya
-## let err = error_result("Validation failed", ["Name is missing"])
-## ```
-pub function error_result(message: string, errors: array = []) -> TlsResult
-    return TlsResult {
-        value: null,
-        status: 1,
-        message: message,
-        errors: errors
+## A fresh `TlsSession` with version 0 and empty negotiation results.
+pub function tls_session_new(sni: string = "") -> TlsSession
+    let name = sni
+    if name is null
+        name = ""
+    end
+    return TlsSession {
+        id_hex: "",
+        version: 0,
+        cipher_suite: 0,
+        sni: name,
+        alpn: "",
+        state: TlsState.Closed,
+        peer_fingerprint: "",
+        created_ms: clock_ms()
     }
 end
 
-## Factory constructor creating a `TlsStats` metric record.
+## Wraps a config and session into a fresh disconnected context.
 ##
 ## ### Parameters
-## - `total`: Total observed items count.
-## - `passed`: Succeeded items count.
-## - `failed`: Failed items count.
-## - `skipped`: Skipped items count. Defaults to `0`.
+## - `config`: Active `TlsConfig` snapshot.
+## - `session`: Current `TlsSession` snapshot (or null for a new one).
 ##
 ## ### Returns
-## A populated `TlsStats` record.
-##
-## ### Examples
-## ```alya
-## let stats = make_stats(100, 95, 5, 0)
-## ```
-pub function make_stats(total: int, passed: int, failed: int, skipped: int = 0) -> TlsStats
-    return TlsStats {
-        total: total,
-        passed: passed,
-        failed: failed,
-        skipped: skipped
+## A `TlsContext` with `sock = -1` and state `Closed`.
+pub function tls_context_new(config, session = null) -> TlsContext
+    let sess = session
+    if sess is null
+        sess = tls_session_new(config.sni)
+    end
+    return TlsContext {
+        config: config,
+        session: sess,
+        sock: -1,
+        state: TlsState.Closed,
+        last_error: ""
     }
 end
 
@@ -264,171 +292,132 @@ end
 # Struct Methods: TlsConfig
 # ───────────────────────────────────────────────────────────────
 
-## Returns a formatted single-line string summary of this configuration.
-##
-## Implicitly satisfies the `Summarizable` interface.
+## Returns 1 when host/port and version bounds are coherent.
 ##
 ## ### Parameters
 ## - `self`: The target `TlsConfig` instance.
 ##
 ## ### Returns
-## Formatted summary string in the form `"{name} (count: {count}, enabled: {enabled})"`.
-pub function TlsConfig.summary(self: TlsConfig) -> string
-    let active_str = when self.enabled
-        is 1 => "active"
-        else => "disabled"
-    end
-    return "{self.name} (count: {self.count}, {active_str})"
-end
-
-## Returns a detailed multi-attribute description of this configuration.
-##
-## Implicitly satisfies the `Describable` interface.
-##
-## ### Parameters
-## - `self`: The target `TlsConfig` instance.
-##
-## ### Returns
-## Detailed descriptive string including priority and style codes.
-pub function TlsConfig.describe(self: TlsConfig) -> string
-    return "[Config] name={self.name}, count={self.count}, priority={self.priority}, style={self.style}"
-end
-
-## Validates whether this configuration conforms to essential operational constraints.
-##
-## Implicitly satisfies the `Describable` interface.
-##
-## ### Parameters
-## - `self`: The target `TlsConfig` instance.
-##
-## ### Returns
-## `1` if valid (non-empty name and count >= 0), `0` otherwise.
+## `1` when valid, `0` otherwise.
 pub function TlsConfig.is_valid(self: TlsConfig) -> int
-    if self.name == "" or self.count < 0
+    if self.host is null or self.host == ""
+        return 0
+    end
+    if self.port <= 0 or self.port > 65535
+        return 0
+    end
+    if self.min_version > self.max_version
+        return 0
+    end
+    if self.timeout_ms <= 0
         return 0
     end
     return 1
 end
 
-## Returns 1 if this configuration is enabled, 0 otherwise.
-##
-## ### Parameters
-## - `self`: The target `TlsConfig` instance.
-##
-## ### Returns
-## `1` when enabled, `0` when disabled.
-pub function TlsConfig.is_enabled(self: TlsConfig) -> int
-    return self.enabled
-end
-
-## Returns a new configuration copy with an updated name.
+## Returns an immutable copy bound to a different host (SNI follows).
 ##
 ## ### Parameters
 ## - `self`: The current `TlsConfig` instance.
-## - `new_name`: The replacement name string.
+## - `new_host`: Replacement hostname string.
 ##
 ## ### Returns
-## A new `TlsConfig` instance with updated name.
-pub function TlsConfig.with_name(self: TlsConfig, new_name) -> TlsConfig
+## A new `TlsConfig` with updated `host` and `sni`.
+pub function TlsConfig.with_host(self: TlsConfig, new_host: string) -> TlsConfig
+    let h = new_host
+    if h is null or h == ""
+        h = self.host
+    end
     return TlsConfig {
-        name: sanitize_name(new_name),
-        count: self.count,
-        priority: self.priority,
-        style: self.style,
-        enabled: self.enabled,
-        tags: self.tags
+        host: h,
+        port: self.port,
+        sni: h,
+        alpn: self.alpn,
+        verify_mode: self.verify_mode,
+        min_version: self.min_version,
+        max_version: self.max_version,
+        timeout_ms: self.timeout_ms,
+        ca_pem: self.ca_pem,
+        cert_pem: self.cert_pem,
+        key_pem: self.key_pem,
+        cipher_allowlist: self.cipher_allowlist
     }
 end
 
-## Returns a new configuration copy with an updated priority level.
+## Returns an immutable copy with a different verification mode.
 ##
 ## ### Parameters
 ## - `self`: The current `TlsConfig` instance.
-## - `new_priority`: New priority level from `TlsPriority`.
+## - `mode`: New `TlsVerifyMode` value.
 ##
 ## ### Returns
-## A new `TlsConfig` instance with updated priority.
-pub function TlsConfig.with_priority(self: TlsConfig, new_priority: int) -> TlsConfig
+## A new `TlsConfig` with updated `verify_mode`.
+pub function TlsConfig.with_verify(self: TlsConfig, mode: int) -> TlsConfig
     return TlsConfig {
-        name: self.name,
-        count: self.count,
-        priority: new_priority,
-        style: self.style,
-        enabled: self.enabled,
-        tags: self.tags
+        host: self.host,
+        port: self.port,
+        sni: self.sni,
+        alpn: self.alpn,
+        verify_mode: mode,
+        min_version: self.min_version,
+        max_version: self.max_version,
+        timeout_ms: self.timeout_ms,
+        ca_pem: self.ca_pem,
+        cert_pem: self.cert_pem,
+        key_pem: self.key_pem,
+        cipher_allowlist: self.cipher_allowlist
     }
 end
 
 # ───────────────────────────────────────────────────────────────
-# Struct Methods: TlsResult
+# Struct Methods: TlsSession
 # ───────────────────────────────────────────────────────────────
 
-## Returns 1 if this result represents a successful operation.
+## Returns 1 when the session completed negotiation.
 ##
 ## ### Parameters
-## - `self`: The target `TlsResult` instance.
+## - `self`: The target `TlsSession` instance.
 ##
 ## ### Returns
-## `1` when status is `0`, `0` otherwise.
-pub function TlsResult.is_ok(self: TlsResult) -> int
-    if self.status == 0
+## `1` for `Established`/`Handshaked` states with a version set.
+pub function TlsSession.is_established(self: TlsSession) -> int
+    if self.version == 0
+        return 0
+    end
+    if self.state == TlsState.Established or self.state == TlsState.Handshaked
         return 1
     end
     return 0
 end
 
-## Returns 1 if this result represents an error condition.
+# ───────────────────────────────────────────────────────────────
+# Struct Methods: TlsContext
+# ───────────────────────────────────────────────────────────────
+
+## Returns 1 when the context holds no recorded error.
 ##
 ## ### Parameters
-## - `self`: The target `TlsResult` instance.
+## - `self`: The target `TlsContext` instance.
 ##
 ## ### Returns
-## `1` when status is non-zero, `0` when status is `0`.
-pub function TlsResult.is_error(self: TlsResult) -> int
-    if self.status != 0
+## `1` when `last_error` is empty, `0` otherwise.
+pub function TlsContext.is_ok(self: TlsContext) -> int
+    if self.last_error is null or self.last_error == ""
         return 1
     end
     return 0
 end
 
-## Unwraps the result's message string, or returns a fallback string on error.
+## Records a failure reason and moves the context to `Failed`.
 ##
 ## ### Parameters
-## - `self`: The target `TlsResult` instance.
-## - `fallback`: Alternative string returned if this result represents an error.
+## - `self`: The target `TlsContext` instance (mutated in place).
+## - `reason`: Human-readable failure description.
 ##
 ## ### Returns
-## `message` on success, or `fallback` on error.
-pub function TlsResult.unwrap_or(self: TlsResult, fallback: string) -> string
-    if self.status == 0
-        return self.message
-    end
-    return fallback
-end
-
-# ───────────────────────────────────────────────────────────────
-# Struct Methods: TlsStats
-# ───────────────────────────────────────────────────────────────
-
-## Returns the total number of checked items (passed + failed).
-##
-## ### Parameters
-## - `self`: The target `TlsStats` instance.
-##
-## ### Returns
-## Integer sum of passed and failed items.
-pub function TlsStats.total_checked(self: TlsStats) -> int
-    return self.passed + self.failed
-end
-
-## Computes and returns the success rate percentage as a formatted string.
-##
-## ### Parameters
-## - `self`: The target `TlsStats` instance.
-##
-## ### Returns
-## Formatted percentage string (e.g. `"90%"`).
-pub function TlsStats.success_rate(self: TlsStats) -> string
-    let checked = self.passed + self.failed
-    return format_percent_internal(self.passed, checked)
+## The same context for chaining.
+pub function TlsContext.fail(self: TlsContext, reason: string) -> TlsContext
+    self.state = TlsState.Failed
+    self.last_error = reason
+    return self
 end

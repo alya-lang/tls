@@ -1,0 +1,40 @@
+## Native FFI verification tests for tls
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function main()
+    test_suite("TLS FFI Tests")
+    let r = runner_new()
+
+    runner_assert_eq(r, tls::alya_tls_const_eq("abc", "abc"), 1, "const_eq identical")
+    runner_assert_eq(r, tls::alya_tls_const_eq("abc", "abd"), 0, "const_eq differs")
+    runner_assert_eq(r, tls::alya_tls_const_eq("", ""), 1, "const_eq empty equal")
+    runner_assert_eq(r, tls::alya_tls_const_eq("short", "longer-string"), 0, "const_eq length mismatch")
+
+    runner_assert_eq(r, tls::alya_tls_version_code(3, 1), 769, "version code 3.1")
+    runner_assert_eq(r, tls::alya_tls_version_code(3, 4), 772, "version code 3.4")
+    runner_assert_eq(r, tls::alya_tls_version_code(9, 9), 2313, "version code passthrough")
+    runner_assert_eq(r, tls::alya_tls_version_code(-1, 0), -1, "negative major rejected")
+    runner_assert_eq(r, tls::alya_tls_version_code(3, 300), -1, "minor overflow rejected")
+
+    runner_assert_eq(r, tls::alya_tls_version_compare(771, 772), -1, "compare less")
+    runner_assert_eq(r, tls::alya_tls_version_compare(772, 772), 0, "compare equal")
+    runner_assert_eq(r, tls::alya_tls_version_compare(772, 771), 1, "compare greater")
+
+    runner_assert_eq(r, tls::alya_tls_cipher_strength(4867), 3, "chacha suite strength 3")
+    runner_assert_eq(r, tls::alya_tls_cipher_strength(49191), 2, "cbc suite strength 2")
+    runner_assert_eq(r, tls::alya_tls_cipher_strength(156), 1, "legacy rsa suite strength 1")
+    runner_assert_eq(r, tls::alya_tls_cipher_strength(9999), 0, "unknown suite strength 0")
+
+    runner_assert_eq(r, tls::alya_tls_is_aead(4865), 1, "aes-gcm is aead")
+    runner_assert_eq(r, tls::alya_tls_is_aead(49191), 0, "cbc is not aead")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

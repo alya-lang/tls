@@ -1,0 +1,180 @@
+## TLS server: listener lifecycle and hello inspection.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Mirrors the `http` server state machine: plain TCP accept, ClientHello
+## inspection (SNI extraction), and raw tunnel I/O. Full server-side key
+## exchange and record encryption build on `core/keys.alya`.
+
+import "std/net" as net
+import "../types.alya"
+import "../core/version.alya"
+import "../core/record.alya"
+import "../core/handshake.alya"
+
+## Server listener handle.
+##
+## ### Fields
+## - `port`: Local port to bind.
+## - `host`: Local interface (informational; binds all interfaces).
+## - `server_sock`: Listening socket handle (-1 when stopped).
+## - `running`: `1` while listening, `0` otherwise.
+## - `cert_pem`: Server certificate chain in PEM format.
+## - `key_pem`: Server private key in PEM format.
+## - `require_client_cert`: `1` for mutual TLS, `0` otherwise.
+pub struct TlsServer
+    port: int,
+    host: string,
+    server_sock: int,
+    running: int,
+    cert_pem: string,
+    key_pem: string,
+    require_client_cert: int
+end
+
+## Creates a new TLS server listener.
+##
+## ### Parameters
+## - `port`: Local port. Defaults to `8443`.
+## - `host`: Local interface label. Defaults to `"0.0.0.0"`.
+##
+## ### Returns
+## Stopped `TlsServer` handle.
+pub function tls_server_new(port: int = 8443, host: string = "0.0.0.0") -> TlsServer
+    let h = host
+    if h is null or h == ""
+        h = "0.0.0.0"
+    end
+    return TlsServer {
+        port: port,
+        host: h,
+        server_sock: -1,
+        running: 0,
+        cert_pem: "",
+        key_pem: "",
+        require_client_cert: 0
+    }
+end
+
+## Attaches a certificate chain and private key to the server.
+##
+## ### Parameters
+## - `server`: Target `TlsServer` handle (mutated in place).
+## - `cert_pem`: Certificate chain in PEM format.
+## - `key_pem`: Private key in PEM format.
+## - `require_client_cert`: `1` for mutual TLS. Defaults to `0`.
+##
+## ### Returns
+## The same server for chaining.
+pub function tls_server_enable_tls(server: TlsServer, cert_pem: string, key_pem: string, require_client_cert: int = 0) -> TlsServer
+    server.cert_pem = cert_pem
+    server.key_pem = key_pem
+    server.require_client_cert = require_client_cert
+    return server
+end
+
+## Returns 1 when server identity material is configured.
+##
+## ### Parameters
+## - `server`: Target `TlsServer` handle.
+##
+## ### Returns
+## `1` when both `cert_pem` and `key_pem` are set, `0` otherwise.
+pub function tls_server_has_identity(server: TlsServer) -> int
+    if server.cert_pem is null or server.cert_pem == ""
+        return 0
+    end
+    if server.key_pem is null or server.key_pem == ""
+        return 0
+    end
+    return 1
+end
+
+## Starts listening on the configured port.
+##
+## ### Parameters
+## - `server`: Target `TlsServer` handle (mutated in place).
+## - `backlog`: Pending-connection queue length. Defaults to `128`.
+##
+## ### Returns
+## Listening socket handle, or -1 on failure.
+pub function tls_server_start(server: TlsServer, backlog: int = 128) -> int
+    if server is null
+        return -1
+    end
+    let sock = net::tcp_listen(server.port, backlog)
+    if sock < 0
+        server.running = 0
+        return -1
+    end
+    server.server_sock = sock
+    server.running = 1
+    return sock
+end
+
+## Accepts one client and inspects its ClientHello.
+##
+## Reads the first record, extracts SNI, and returns a context in the
+## `HandshakeStarted` state. The caller completes negotiation with
+## `core/handshake.alya` builders and `cert/verify.alya` policy.
+##
+## ### Parameters
+## - `server`: Running `TlsServer` handle.
+## - `timeout_ms`: Accept poll timeout. Defaults to `1000`.
+##
+## ### Returns
+## Client `TlsContext`, or null when no peer arrived.
+pub function tls_server_accept(server: TlsServer, timeout_ms: int = 1000)
+    if server is null or server.running == 0 or server.server_sock < 0
+        return null
+    end
+    let ready = net::tcp_poll(server.server_sock, timeout_ms)
+    if ready != 1
+        return null
+    end
+    let client_sock = net::tcp_accept(server.server_sock)
+    if client_sock < 0
+        return null
+    end
+    net::tcp_set_timeout(client_sock, 5000)
+    let raw = net::tcp_recv(client_sock, 4096)
+    let cfg = tls_config_new("server", server.port, TlsVerifyMode.Optional)
+    let ctx = tls_context_new(cfg)
+    ctx.sock = client_sock
+    if raw is null or len(raw) == 0
+        ctx.state = TlsState.TcpConnected
+        return ctx
+    end
+    let rec = record_decode(wire_to_bytes(raw))
+    if rec["error"] == "" and rec["type"] == TlsContentType.Handshake and len(rec["fragment"]) > 4
+        let frag = rec["fragment"]
+        if frag[0] == TlsHandshakeType.ClientHello
+            let body = []
+            let b = 4
+            while b < len(frag)
+                body.push(frag[b])
+                b += 1
+            end
+            ctx.session.sni = client_hello_sni(body)
+        end
+    end
+    ctx.state = TlsState.HandshakeStarted
+    return ctx
+end
+
+## Stops the listener and releases socket resources.
+##
+## ### Parameters
+## - `server`: Target `TlsServer` handle (mutated in place).
+##
+## ### Returns
+## `0` on success.
+pub function tls_server_close(server: TlsServer) -> int
+    if server is not null
+        if server.server_sock >= 0
+            net::tcp_close(server.server_sock)
+            server.server_sock = -1
+        end
+        server.running = 0
+    end
+    return 0
+end

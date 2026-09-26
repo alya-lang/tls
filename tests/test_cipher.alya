@@ -1,0 +1,39 @@
+## Cipher suite tests for tls
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function main()
+    test_suite("TLS Cipher Tests")
+    let r = runner_new()
+
+    runner_assert_str_eq(r, tls::cipher_suite_name(4865), "TLS_AES_128_GCM_SHA256", "name 0x1301")
+    runner_assert_str_eq(r, tls::cipher_suite_name(4867), "TLS_CHACHA20_POLY1305_SHA256", "name 0x1303")
+    runner_assert_str_eq(r, tls::cipher_suite_name(49199), "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", "name 0xC02F")
+    runner_assert_str_eq(r, tls::cipher_suite_name(9999), "TLS-UNKNOWN", "unknown name")
+
+    runner_assert_eq(r, tls::cipher_is_weak(4865), 0, "aes-gcm not weak")
+    runner_assert_eq(r, tls::cipher_is_weak(156), 1, "legacy rsa weak")
+    runner_assert_eq(r, tls::cipher_is_weak(9999), 1, "unknown weak")
+
+    let picked = tls::cipher_select([156, 4867], [156, 4867])
+    runner_assert_eq(r, picked, 4867, "select strongest common suite")
+    runner_assert_eq(r, tls::cipher_select([156], [4867]), 0, "no overlap is 0")
+    runner_assert_eq(r, tls::cipher_select(null, null), 4865, "defaults negotiate first preference")
+
+    let aead = tls::cipher_filter_aead([49191, 4865, 9999])
+    runner_assert_eq(r, len(aead), 1, "filter keeps one aead")
+    runner_assert_eq(r, aead[0], 4865, "filter keeps aes-gcm")
+
+    let defaults = tls::cipher_default_suites()
+    runner_assert_true(r, len(defaults) >= 4, "defaults non-trivial")
+    runner_assert_eq(r, tls::cipher_is_weak(defaults[0]), 0, "first default not weak")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

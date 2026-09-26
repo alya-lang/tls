@@ -1,0 +1,58 @@
+## Key schedule tests for tls
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function main()
+    test_suite("TLS Keys Tests")
+    let r = runner_new()
+
+    let secret = [11, 22, 33]
+    let seed = [1, 2, 3, 4]
+    let prf = tls::prf_sha256(secret, "test label", seed, 32)
+    runner_assert_eq(r, len(prf), 32, "prf output len")
+    let prf2 = tls::prf_sha256(secret, "test label", seed, 32)
+    runner_assert_eq(r, prf[0], prf2[0], "prf deterministic first byte")
+    runner_assert_eq(r, prf[31], prf2[31], "prf deterministic last byte")
+    let prf_other = tls::prf_sha256(secret, "other label", seed, 32)
+    runner_assert_true(r, prf[0] != prf_other[0] or prf[7] != prf_other[7] or prf[15] != prf_other[15], "prf label-sensitive")
+
+    let cli = []
+    let srv = []
+    let i = 0
+    while i < 32
+        cli.push(i)
+        srv.push(255 - i)
+        i += 1
+    end
+    let pre = []
+    let p = 0
+    while p < 48
+        pre.push(p)
+        p += 1
+    end
+    let ms = tls::master_secret(pre, cli, srv)
+    runner_assert_eq(r, len(ms), 48, "master secret 48 bytes")
+    let ms2 = tls::master_secret(pre, cli, srv)
+    runner_assert_eq(r, ms[0], ms2[0], "master deterministic")
+
+    let block = tls::key_block(ms, srv, cli, 64)
+    runner_assert_eq(r, len(block), 64, "key block len")
+    let parts = tls::split_key_block(block, 0, 16, 4)
+    runner_assert_eq(r, len(parts["client_key"]), 16, "client key len")
+    runner_assert_eq(r, len(parts["server_key"]), 16, "server key len")
+    runner_assert_eq(r, len(parts["client_iv"]), 4, "client iv len")
+    let short = tls::split_key_block([1, 2], 8, 16, 4)
+    runner_assert_eq(r, len(short["client_key"]), 0, "short block yields empty keys")
+
+    let hkdf_out = tls::hkdf_expand_label(ms, "key", [5, 6, 7], 16)
+    runner_assert_eq(r, len(hkdf_out), 16, "hkdf label output len")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

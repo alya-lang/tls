@@ -1,0 +1,163 @@
+## TLS version negotiation helpers.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Converts between wire codes, human labels, and negotiated bounds. Native
+## ordering comparisons delegate to the bundled C engine for exactness.
+
+import "std/str"
+import "../types.alya"
+import "../ffi.alya"
+
+## Encodes a major/minor pair into a comparable version code.
+##
+## ### Parameters
+## - `major`: Major version byte (3 for all TLS releases).
+## - `minor`: Minor version byte (1 for TLS 1.0 .. 4 for TLS 1.3).
+##
+## ### Returns
+## Combined code, or -1 for out-of-range input.
+pub function version_code(major: int, minor: int) -> int
+    return alya_tls_version_code(major, minor)
+end
+
+## Splits a version code into its major byte.
+##
+## ### Parameters
+## - `code`: Combined version code (e.g. 771).
+##
+## ### Returns
+## Major version byte.
+pub function version_major(code: int) -> int
+    return bit_and(bit_shr(code, 8), 255)
+end
+
+## Splits a version code into its minor byte.
+##
+## ### Parameters
+## - `code`: Combined version code (e.g. 771).
+##
+## ### Returns
+## Minor version byte.
+pub function version_minor(code: int) -> int
+    return bit_and(code, 255)
+end
+
+## Compares two version codes.
+##
+## ### Parameters
+## - `a`: First version code.
+## - `b`: Second version code.
+##
+## ### Returns
+## -1 when `a < b`, 0 when equal, 1 when `a > b`.
+pub function version_compare(a: int, b: int) -> int
+    return alya_tls_version_compare(a, b)
+end
+
+## Formats a version code as a human label.
+##
+## ### Parameters
+## - `code`: Version code to format.
+##
+## ### Returns
+## `"TLSv1.0"` .. `"TLSv1.3"`, or `"TLS-unknown"` for anything else.
+pub function version_to_string(code: int) -> string
+    if code == TlsVersion.Tls10
+        return "TLSv1.0"
+    end
+    if code == TlsVersion.Tls11
+        return "TLSv1.1"
+    end
+    if code == TlsVersion.Tls12
+        return "TLSv1.2"
+    end
+    if code == TlsVersion.Tls13
+        return "TLSv1.3"
+    end
+    return "TLS-unknown"
+end
+
+## Parses a human label into a version code.
+##
+## Accepts `"TLSv1.2"`, `"TLS1.2"`, `"1.2"`, and `"v1.2"` casings.
+##
+## ### Parameters
+## - `label`: Version label string.
+##
+## ### Returns
+## Matching code, or 0 when the label is unrecognized.
+pub function version_parse(label: string) -> int
+    if label is null
+        return 0
+    end
+    let l = lower(trim(label))
+    if l == "tlsv1.0" or l == "tls1.0" or l == "1.0" or l == "v1.0"
+        return TlsVersion.Tls10
+    end
+    if l == "tlsv1.1" or l == "tls1.1" or l == "1.1" or l == "v1.1"
+        return TlsVersion.Tls12 - 1
+    end
+    if l == "tlsv1.2" or l == "tls1.2" or l == "1.2" or l == "v1.2"
+        return TlsVersion.Tls12
+    end
+    if l == "tlsv1.3" or l == "tls1.3" or l == "1.3" or l == "v1.3"
+        return TlsVersion.Tls13
+    end
+    return 0
+end
+
+## Returns 1 for protocol versions this package implements.
+##
+## ### Parameters
+## - `code`: Version code to check.
+##
+## ### Returns
+## `1` for TLS 1.0 .. TLS 1.3, `0` otherwise.
+pub function version_is_supported(code: int) -> int
+    if code == TlsVersion.Tls10 or code == TlsVersion.Tls11 or code == TlsVersion.Tls12 or code == TlsVersion.Tls13
+        return 1
+    end
+    return 0
+end
+
+## Returns 1 for versions considered secure by default policy.
+##
+## ### Parameters
+## - `code`: Version code to check.
+##
+## ### Returns
+## `1` for TLS 1.2 and TLS 1.3, `0` otherwise.
+pub function version_is_secure(code: int) -> int
+    if code == TlsVersion.Tls12 or code == TlsVersion.Tls13
+        return 1
+    end
+    return 0
+end
+
+## Negotiates the highest version acceptable to both endpoints.
+##
+## Clamps the peer version into the local `[min_version, max_version]`
+## interval. Returns 0 when there is no overlap.
+##
+## ### Parameters
+## - `min_version`: Lowest locally acceptable version code.
+## - `max_version`: Highest locally acceptable version code.
+## - `peer_version`: Version offered by the peer.
+##
+## ### Returns
+## Negotiated version code, or 0 on mismatch.
+pub function version_negotiate(min_version: int, max_version: int, peer_version: int) -> int
+    if min_version > max_version
+        return 0
+    end
+    if version_is_supported(peer_version) == 0
+        return 0
+    end
+    if version_compare(peer_version, min_version) < 0
+        return 0
+    end
+    if version_compare(peer_version, max_version) > 0
+        return max_version
+    end
+    return peer_version
+end

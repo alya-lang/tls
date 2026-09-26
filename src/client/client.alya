@@ -1,0 +1,234 @@
+## TLS client: TCP dial, hello exchange, and secure tunnel helpers.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## `tls_connect` performs a real TCP dial plus a best-effort ClientHello /
+## ServerHello exchange for version and suite negotiation. Bulk encryption
+## uses `core/keys.alya` material with `crypto` AEAD primitives; certificate
+## authorization stays with `cert/verify.alya` on caller-supplied chains.
+
+import "std/net" as net
+import "../types.alya"
+import "../core/version.alya"
+import "../core/cipher.alya"
+import "../core/record.alya"
+import "../core/handshake.alya"
+
+## Builds a client configuration alias with secure defaults.
+##
+## ### Parameters
+## - `host`: Remote hostname for SNI and verification.
+## - `port`: Remote TCP port. Defaults to `443`.
+## - `verify_mode`: Verification strictness. Defaults to `Required`.
+##
+## ### Returns
+## Initialized `TlsConfig` instance.
+pub function tls_client_config(host: string, port: int = 443, verify_mode: int = TlsVerifyMode.Required) -> TlsConfig
+    return tls_config_new(host, port, verify_mode)
+end
+
+## Opens a TCP connection and negotiates TLS parameters.
+##
+## Never throws: every failure returns a `Failed` context carrying
+## `last_error`. When the peer speaks no TLS, the context reports the
+## parse failure while keeping the socket open for inspection.
+##
+## ### Parameters
+## - `config`: Active `TlsConfig` snapshot.
+##
+## ### Returns
+## Connected `TlsContext` (established or failed).
+pub function tls_connect(config: TlsConfig) -> TlsContext
+    let ctx = tls_context_new(config)
+    if config.is_valid() == 0
+        return ctx.fail("invalid TLS config (host, port, or version bounds)")
+    end
+    let sock = -1
+    try
+        sock = net::tcp_connect(config.host, config.port)
+    catch e
+        return ctx.fail("TCP connection failed to {config.host}:{config.port}")
+    end
+    if sock < 0
+        return ctx.fail("TCP connection failed to {config.host}:{config.port}")
+    end
+    net::tcp_set_timeout(sock, config.timeout_ms)
+    ctx.sock = sock
+    ctx.state = TlsState.TcpConnected
+    let hello = build_client_hello(config)
+    net::tcp_send(sock, hello["wire"])
+    ctx.state = TlsState.HandshakeStarted
+    let raw = ""
+    let tries = 0
+    while tries < 8
+        let chunk = net::tcp_recv(sock, 4096)
+        if chunk == "" or len(chunk) == 0
+            break
+        end
+        raw = raw + chunk
+        if len(raw) >= 5
+            break
+        end
+        tries += 1
+    end
+    if len(raw) < 5
+        return ctx.fail("no ServerHello received (peer may not speak TLS)")
+    end
+    let rec = record_decode(wire_to_bytes(raw))
+    if rec["error"] != ""
+        return ctx.fail("ServerHello record error: " + rec["error"])
+    end
+    if rec["type"] == TlsContentType.Alert
+        return ctx.fail("peer returned TLS alert during handshake")
+    end
+    if rec["type"] != TlsContentType.Handshake or len(rec["fragment"]) < 4
+        return ctx.fail("unexpected TLS record during handshake")
+    end
+    let frag = rec["fragment"]
+    if frag[0] != TlsHandshakeType.ServerHello
+        return ctx.fail("expected ServerHello, got handshake type " + str(frag[0]))
+    end
+    let body = []
+    let b = 4
+    while b < len(frag)
+        body.push(frag[b])
+        b += 1
+    end
+    let sh = parse_server_hello(body)
+    if sh["error"] != ""
+        return ctx.fail("ServerHello parse error: " + sh["error"])
+    end
+    let negotiated = version_negotiate(config.min_version, config.max_version, sh["version"])
+    if negotiated == 0
+        return ctx.fail("no overlapping TLS version with peer")
+    end
+    if cipher_strength(sh["cipher_suite"]) == 0
+        return ctx.fail("peer selected unknown cipher suite")
+    end
+    ctx.session.version = negotiated
+    ctx.session.cipher_suite = sh["cipher_suite"]
+    ctx.session.id_hex = sh["session_id"]
+    ctx.session.state = TlsState.Handshaked
+    ctx.session.created_ms = clock_ms()
+    ctx.state = TlsState.Handshaked
+    return ctx
+end
+
+## Establishes an offline session for framing and policy tests.
+##
+## Performs no I/O. Useful for record protection and verification flows
+## without a live peer.
+##
+## ### Parameters
+## - `config`: Active `TlsConfig` snapshot.
+## - `version`: Negotiated version code. Defaults to TLS 1.2.
+## - `suite`: Negotiated suite id. Defaults to AES-128-GCM.
+##
+## ### Returns
+## `Established` context with `sock = -1`.
+pub function tls_mock_establish(config: TlsConfig, version: int = TlsVersion.Tls12, suite: int = SUITE_AES_128_GCM_SHA256) -> TlsContext
+    let ctx = tls_context_new(config)
+    ctx.session.version = version
+    ctx.session.cipher_suite = suite
+    ctx.session.state = TlsState.Established
+    ctx.session.created_ms = clock_ms()
+    ctx.state = TlsState.Established
+    return ctx
+end
+
+## Sends raw bytes over the established tunnel.
+##
+## ### Parameters
+## - `ctx`: Active `TlsContext`.
+## - `data`: Payload string.
+##
+## ### Returns
+## Bytes sent, or -1 when the socket is unusable.
+pub function tls_send(ctx: TlsContext, data: string) -> int
+    if ctx is null or ctx.sock < 0
+        return -1
+    end
+    if data is null
+        data = ""
+    end
+    return net::tcp_send(ctx.sock, data)
+end
+
+## Receives up to `max_bytes` from the tunnel.
+##
+## ### Parameters
+## - `ctx`: Active `TlsContext`.
+## - `max_bytes`: Read limit. Defaults to `4096`.
+##
+## ### Returns
+## Received string, or empty on close/error.
+pub function tls_recv(ctx: TlsContext, max_bytes: int = 4096) -> string
+    if ctx is null or ctx.sock < 0
+        return ""
+    end
+    let limit = max_bytes
+    if limit <= 0
+        limit = 4096
+    end
+    return net::tcp_recv(ctx.sock, limit)
+end
+
+## Frames plaintext as ApplicationData records for an established session.
+##
+## ### Parameters
+## - `ctx`: Established `TlsContext`.
+## - `plaintext`: Payload byte array.
+##
+## ### Returns
+## Array of record wire strings ready for `tls_send`.
+pub function tls_wrap_app_data(ctx: TlsContext, plaintext) -> array
+    let out = []
+    if ctx is null or ctx.session.is_established() == 0
+        return out
+    end
+    let data = plaintext
+    if data is null
+        data = []
+    end
+    let parts = record_fragment(data)
+    let i = 0
+    while i < len(parts)
+        let rec = record_encode(TlsContentType.ApplicationData, ctx.session.version, parts[i])
+        out.push(rec["wire"])
+        i += 1
+    end
+    return out
+end
+
+## Closes the tunnel socket and marks the context closed.
+##
+## ### Parameters
+## - `ctx`: Target `TlsContext` (mutated in place).
+##
+## ### Returns
+## `0` on success.
+pub function tls_close(ctx: TlsContext) -> int
+    if ctx is not null
+        if ctx.sock >= 0
+            net::tcp_close(ctx.sock)
+            ctx.sock = -1
+        end
+        ctx.state = TlsState.Closed
+    end
+    return 0
+end
+
+## Builds a plaintext HTTP request for an established tunnel.
+##
+## ### Parameters
+## - `host`: Authority hostname.
+## - `path`: Request target. Defaults to `"/"`.
+##
+## ### Returns
+## HTTP/1.1 GET wire string with Host and Connection headers.
+pub function https_request_wire(host: string, path: string = "/") -> string
+    let target = path
+    if target is null or target == ""
+        target = "/"
+    end
+    return "GET " + target + " HTTP/1.1\r\nHost: " + host + "\r\nUser-Agent: Alya-Tls/0.1.0\r\nConnection: close\r\n\r\n"
+end

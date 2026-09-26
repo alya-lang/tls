@@ -2,5 +2,9 @@
 # Part of the Alya Language package ecosystem (https://github.com/alya-lang)
 
 extern "C" from "tls"
-    function alya_tls_add(a: i32, b: i32) -> i32
+    function alya_tls_const_eq(a: str, b: str) -> i32
+    function alya_tls_version_code(major: i32, minor: i32) -> i32
+    function alya_tls_version_compare(a_code: i32, b_code: i32) -> i32
+    function alya_tls_cipher_strength(suite: i32) -> i32
+    function alya_tls_is_aead(suite: i32) -> i32
 end

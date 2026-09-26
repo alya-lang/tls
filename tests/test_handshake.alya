@@ -1,0 +1,69 @@
+## Handshake message tests for tls
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function main()
+    test_suite("TLS Handshake Tests")
+    let r = runner_new()
+
+    let rnd = tls::hello_random()
+    runner_assert_eq(r, len(rnd), 32, "client random is 32 bytes")
+
+    let sni = tls::sni_extension("example.com")
+    runner_assert_eq(r, sni[0], 0, "sni type hi")
+    runner_assert_eq(r, sni[1], 0, "sni type lo")
+    runner_assert_true(r, len(sni) > 9, "sni extension non-trivial")
+
+    let alpn = tls::alpn_extension(["h2", "http/1.1"])
+    runner_assert_eq(r, alpn[0], 0, "alpn type hi")
+    runner_assert_eq(r, alpn[1], 16, "alpn type lo")
+    runner_assert_eq(r, len(tls::alpn_extension(null)), 0, "null alpn empty")
+    runner_assert_eq(r, len(tls::alpn_extension([])), 0, "empty alpn empty")
+
+    let cfg = tls::config("example.com")
+    let hello = tls::build_client_hello(cfg)
+    runner_assert_eq(r, hello["bytes"][0], 22, "hello record is handshake")
+    runner_assert_eq(r, hello["version"], 771, "hello offers TLS 1.2 record version")
+    runner_assert_eq(r, len(hello["random"]), 32, "hello random len")
+    runner_assert_str_eq(r, hello["sni"], "example.com", "hello sni kept")
+    runner_assert_str_eq(r, tls::client_hello_sni(hello["body"]), "example.com", "sni roundtrip")
+
+    let srv_rand = []
+    let q = 0
+    while q < 32
+        srv_rand.push(q)
+        q += 1
+    end
+    let body = [3, 3]
+    let w = 0
+    while w < 32
+        body.push(srv_rand[w])
+        w += 1
+    end
+    body.push(0)
+    body.push(19)
+    body.push(1)
+    body.push(0)
+    let sh = tls::parse_server_hello(body)
+    runner_assert_str_eq(r, sh["error"], "", "server hello parses")
+    runner_assert_eq(r, sh["version"], 771, "server hello version")
+    runner_assert_eq(r, sh["cipher_suite"], 4865, "server hello suite")
+    runner_assert_true(r, len(sh["random"]) == 32, "server random len")
+
+    let bad_sh = tls::parse_server_hello([1, 2])
+    runner_assert_true(r, bad_sh["error"] != "", "short hello errors")
+
+    let tx = tls::transcript_hash([1, 2, 3])
+    runner_assert_eq(r, len(tx), 32, "transcript hash 32 bytes")
+    let fin = tls::finished_verify_data([9, 9, 9], "client finished", tx)
+    runner_assert_eq(r, len(fin), 12, "verify data 12 bytes")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

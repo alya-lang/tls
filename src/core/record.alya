@@ -1,0 +1,211 @@
+## TLS record layer encoding and framing (RFC 8446 section 5.1).
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Binary material uses plain `array` byte lists (`0..255`) so every routine
+## stays testable without sockets. Wire strings use single-byte characters.
+
+import "../types.alya"
+import "./version.alya"
+
+## Maximum plaintext fragment per record (2^14).
+pub const RECORD_MAX_FRAGMENT = 16384
+
+## Record header length in bytes.
+pub const RECORD_HEADER_LEN = 5
+
+## Encodes an unsigned 16-bit value as big-endian bytes.
+##
+## ### Parameters
+## - `v`: Value in `[0, 65535]`.
+##
+## ### Returns
+## Two-element byte array `[hi, lo]`.
+pub function u16_to_bytes(v: int) -> array
+    let n = v
+    if n < 0
+        n = 0
+    end
+    if n > 65535
+        n = 65535
+    end
+    return [bit_and(bit_shr(n, 8), 255), bit_and(n, 255)]
+end
+
+## Decodes big-endian bytes at an offset into an unsigned 16-bit value.
+##
+## ### Parameters
+## - `data`: Source byte array.
+## - `offset`: Read position. Defaults to `0`.
+##
+## ### Returns
+## Decoded value, or -1 when fewer than 2 bytes remain.
+pub function bytes_to_u16(data, offset: int = 0) -> int
+    if data is null or len(data) < offset + 2
+        return -1
+    end
+    return data[offset] * 256 + data[offset + 1]
+end
+
+## Converts a byte array into a single-byte wire string.
+##
+## ### Parameters
+## - `data`: Byte array.
+##
+## ### Returns
+## Wire string of equal length.
+pub function bytes_to_wire(data) -> string
+    let out = ""
+    if data is null
+        return out
+    end
+    let i = 0
+    while i < len(data)
+        out = out + chr(data[i])
+        i += 1
+    end
+    return out
+end
+
+## Converts a wire string back into a byte array.
+##
+## ### Parameters
+## - `wire`: Wire string.
+##
+## ### Returns
+## Byte array of equal length.
+pub function wire_to_bytes(wire: string) -> array
+    let out = []
+    if wire is null
+        return out
+    end
+    let i = 0
+    while i < len(wire)
+        out.push(ord(char_at(wire, i)))
+        i += 1
+    end
+    return out
+end
+
+## Frames one record: 5-byte header plus fragment.
+##
+## ### Parameters
+## - `content_type`: `TlsContentType` code.
+## - `version`: Legacy record version code (TLS 1.0+).
+## - `fragment`: Payload byte array.
+##
+## ### Returns
+## Map with `type`, `version`, `length`, `bytes`, and `wire` fields.
+pub function record_encode(content_type: int, version: int, fragment) -> map
+    let body = fragment
+    if body is null
+        body = []
+    end
+    let ver = version
+    if version_is_supported(ver) == 0
+        ver = TlsVersion.Tls12
+    end
+    let header = [content_type, version_major(ver), version_minor(ver), bit_and(bit_shr(len(body), 8), 255), bit_and(len(body), 255)]
+    let bytes = []
+    let i = 0
+    while i < len(header)
+        bytes.push(header[i])
+        i += 1
+    end
+    let j = 0
+    while j < len(body)
+        bytes.push(body[j])
+        j += 1
+    end
+    return { "type": content_type, "version": ver, "length": len(body), "bytes": bytes, "wire": bytes_to_wire(bytes) }
+end
+
+## Parses and validates one record from the front of a byte buffer.
+##
+## ### Parameters
+## - `data`: Buffer holding at least one full record.
+##
+## ### Returns
+## Map with `type`, `version`, `length`, `fragment`, `consumed`, and
+## `error` fields (`error` is empty on success).
+pub function record_decode(data) -> map
+    let fail = { "type": 0, "version": 0, "length": 0, "fragment": [], "consumed": 0, "error": "empty buffer" }
+    if data is null or len(data) < RECORD_HEADER_LEN
+        return fail
+    end
+    let ctype = data[0]
+    if ctype != TlsContentType.ChangeCipherSpec and ctype != TlsContentType.Alert and ctype != TlsContentType.Handshake and ctype != TlsContentType.ApplicationData
+        return { "type": 0, "version": 0, "length": 0, "fragment": [], "consumed": 0, "error": "unknown content type" }
+    end
+    let ver = data[1] * 256 + data[2]
+    if version_is_supported(ver) == 0
+        return { "type": 0, "version": 0, "length": 0, "fragment": [], "consumed": 0, "error": "unsupported record version" }
+    end
+    let length = data[3] * 256 + data[4]
+    if length > RECORD_MAX_FRAGMENT + 256
+        return { "type": 0, "version": 0, "length": 0, "fragment": [], "consumed": 0, "error": "record length overflow" }
+    end
+    if len(data) < RECORD_HEADER_LEN + length
+        return { "type": 0, "version": 0, "length": 0, "fragment": [], "consumed": 0, "error": "truncated record" }
+    end
+    let frag = []
+    let i = 0
+    while i < length
+        frag.push(data[RECORD_HEADER_LEN + i])
+        i += 1
+    end
+    return { "type": ctype, "version": ver, "length": length, "fragment": frag, "consumed": RECORD_HEADER_LEN + length, "error": "" }
+end
+
+## Splits bulk plaintext into record-sized fragments.
+##
+## ### Parameters
+## - `data`: Plaintext byte array.
+## - `max_fragment`: Chunk size. Defaults to 16384.
+##
+## ### Returns
+## Array of byte-array chunks (possibly empty).
+pub function record_fragment(data, max_fragment: int = 16384) -> array
+    let out = []
+    if data is null or len(data) == 0
+        return out
+    end
+    let chunk = max_fragment
+    if chunk <= 0
+        chunk = RECORD_MAX_FRAGMENT
+    end
+    let i = 0
+    while i < len(data)
+        let piece = []
+        let j = 0
+        while j < chunk and i + j < len(data)
+            piece.push(data[i + j])
+            j += 1
+        end
+        out.push(piece)
+        i += chunk
+    end
+    return out
+end
+
+## Formats a content type code as a human label.
+##
+## ### Parameters
+## - `ctype`: Content type code.
+##
+## ### Returns
+## Label string, or `"unknown"` when unmapped.
+pub function record_type_name(ctype: int) -> string
+    if ctype == TlsContentType.ChangeCipherSpec
+        return "change_cipher_spec"
+    end
+    if ctype == TlsContentType.Alert
+        return "alert"
+    end
+    if ctype == TlsContentType.Handshake
+        return "handshake"
+    end
+    if ctype == TlsContentType.ApplicationData
+        return "application_data"
+    end
+    return "unknown"
+end

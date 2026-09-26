@@ -1,0 +1,387 @@
+## Minimal X.509 field scanner for DER certificates.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Implements a heuristic TLV walk that extracts subject/issuer names,
+## validity windows, DNS names, and serials without a full ASN.1 stack.
+## Chain building and signature checks are explicit non-goals: use OS trust
+## stores or `cert/verify.alya` pinning for authorization decisions.
+
+import "std/str"
+import "../types.alya"
+import "./pem.alya"
+
+## Reads one TLV header at a position.
+##
+## ### Parameters
+## - `data`: DER byte array.
+## - `pos`: Read offset.
+##
+## ### Returns
+## Map with `tag`, `length`, `header_len`, `total_len`, and `error`.
+pub function tlv_at(data, pos: int) -> map
+    let fail = { "tag": 0, "length": 0, "header_len": 0, "total_len": 0, "error": "truncated header" }
+    if data is null or pos < 0 or len(data) < pos + 2
+        return fail
+    end
+    let tag = data[pos]
+    let first = data[pos + 1]
+    if first < 128
+        return { "tag": tag, "length": first, "header_len": 2, "total_len": 2 + first, "error": "" }
+    end
+    let octets = first - 128
+    if octets <= 0 or octets > 4 or len(data) < pos + 2 + octets
+        return { "tag": 0, "length": 0, "header_len": 0, "total_len": 0, "error": "bad length octets" }
+    end
+    let length = 0
+    let i = 0
+    while i < octets
+        length = length * 256 + data[pos + 2 + i]
+        i += 1
+    end
+    return { "tag": tag, "length": length, "header_len": 2 + octets, "total_len": 2 + octets + length, "error": "" }
+end
+
+## Locates a byte needle inside DER data.
+##
+## ### Parameters
+## - `data`: Haystack byte array.
+## - `needle`: Needle byte array.
+## - `start`: Search offset. Defaults to `0`.
+##
+## ### Returns
+## Match offset, or -1 when absent.
+pub function der_find(data, needle, from_pos: int = 0) -> int
+    if data is null or needle is null or len(needle) == 0
+        return -1
+    end
+    let off = from_pos
+    if off < 0
+        off = 0
+    end
+    let i = off
+    while i + len(needle) <= len(data)
+        let hit = 1
+        let j = 0
+        while j < len(needle)
+            if data[i + j] != needle[j]
+                hit = 0
+                break
+            end
+            j += 1
+        end
+        if hit == 1
+            return i
+        end
+        i += 1
+    end
+    return -1
+end
+
+## Decodes a string value at a TLV value offset.
+##
+## Handles PrintableString, UTF8String, IA5String, TeletexString, and
+## ASCII-subset BMPString values.
+##
+## ### Parameters
+## - `data`: DER byte array.
+## - `pos`: Value offset (first content byte).
+## - `length`: Value length in bytes.
+## - `tag`: String tag byte.
+##
+## ### Returns
+## Decoded string.
+pub function der_string_value(data, pos: int, length: int, tag: int) -> string
+    let out = ""
+    if data is null or length <= 0 or pos < 0 or pos + length > len(data)
+        return out
+    end
+    if tag == 30
+        let i = 0
+        while i + 1 < length
+            out = out + chr(data[pos + i + 1])
+            i += 2
+        end
+        return out
+    end
+    let k = 0
+    while k < length
+        out = out + chr(data[pos + k])
+        k += 1
+    end
+    return out
+end
+
+## Reads the string TLV that follows an OID match.
+##
+## ### Parameters
+## - `data`: DER byte array.
+## - `oid_pos`: Offset of the OID tag byte.
+## - `oid_len`: Full OID TLV length including header.
+##
+## ### Returns
+## Decoded attribute string, or empty when malformed.
+pub function string_after_oid(data, oid_pos: int, oid_len: int) -> string
+    let p = oid_pos + oid_len
+    if data is null or p + 2 > len(data)
+        return ""
+    end
+    let t = tlv_at(data, p)
+    if t["error"] != ""
+        return ""
+    end
+    let tag = t["tag"]
+    if tag != 12 and tag != 13 and tag != 19 and tag != 20 and tag != 22 and tag != 30
+        return ""
+    end
+    return der_string_value(data, p + t["header_len"], t["length"], tag)
+end
+
+## Collects every CommonName value in document order.
+##
+## ### Parameters
+## - `der`: DER byte array.
+##
+## ### Returns
+## Array of CN strings (issuer first, subject second per TBSCertificate).
+pub function collect_common_names(der) -> array
+    let out = []
+    if der is null or len(der) == 0
+        return out
+    end
+    let cn_oid = [6, 3, 85, 4, 3]
+    let pos = 0
+    while 1
+        let hit = der_find(der, cn_oid, pos)
+        if hit < 0
+            break
+        end
+        let t = tlv_at(der, hit)
+        if t["error"] == ""
+            let val = string_after_oid(der, hit, t["total_len"])
+            if val != ""
+                out.push(val)
+            end
+            pos = hit + t["total_len"]
+        else
+            pos = hit + 1
+        end
+    end
+    return out
+end
+
+## Collects DNS names from the SubjectAlternativeName extension.
+##
+## ### Parameters
+## - `der`: DER byte array.
+##
+## ### Returns
+## Array of dNSName strings (possibly empty).
+pub function collect_dns_names(der) -> array
+    let out = []
+    if der is null or len(der) == 0
+        return out
+    end
+    let san_oid = [6, 3, 85, 29, 17]
+    let hit = der_find(der, san_oid, 0)
+    if hit < 0
+        return out
+    end
+    let t = tlv_at(der, hit)
+    if t["error"] != ""
+        return out
+    end
+    # The extension value follows as an OCTET STRING wrapping GeneralNames.
+    # Scope the dNSName scan to that value to avoid signature false hits.
+    let val_pos = hit + t["total_len"]
+    let val_end = len(der)
+    let oct = tlv_at(der, val_pos)
+    if oct["error"] == "" and oct["tag"] == 4 and val_pos + oct["total_len"] <= len(der)
+        val_pos = val_pos + oct["header_len"]
+        val_end = val_pos + oct["length"]
+    else
+        val_end = hit + t["total_len"] + 64
+        if val_end > len(der)
+            val_end = len(der)
+        end
+    end
+    let i = val_pos
+    while i + 2 <= val_end
+        if der[i] == 130
+            let n = der[i + 1]
+            if n > 0 and i + 2 + n <= val_end
+                let name = ""
+                let k = 0
+                while k < n
+                    name = name + chr(der[i + 2 + k])
+                    k += 1
+                end
+                out.push(name)
+                i = i + 2 + n
+            else
+                i += 1
+            end
+        else
+            i += 1
+        end
+    end
+    return out
+end
+
+## Collects UTCTime/GeneralizedTime stamps in document order.
+##
+## ### Parameters
+## - `der`: DER byte array.
+##
+## ### Returns
+## Array of normalized `YYYYMMDDHHMMSSZ` stamps.
+pub function collect_time_stamps(der) -> array
+    let out = []
+    if der is null or len(der) == 0
+        return out
+    end
+    let i = 0
+    while i + 2 <= len(der)
+        let tag = der[i]
+        if tag == 23 or tag == 24
+            let t = tlv_at(der, i)
+            if t["error"] == "" and i + t["header_len"] + t["length"] <= len(der)
+                let raw = ""
+                let k = 0
+                while k < t["length"]
+                    raw = raw + chr(der[i + t["header_len"] + k])
+                    k += 1
+                end
+                let norm = normalize_time_stamp(raw)
+                if norm != ""
+                    out.push(norm)
+                end
+                i = i + t["total_len"]
+            else
+                i += 1
+            end
+        else
+            i += 1
+        end
+    end
+    return out
+end
+
+## Normalizes a time stamp to `YYYYMMDDHHMMSSZ`.
+##
+## Accepts UTCTime (`YYMMDDHHMMSSZ`) with a 1950/2050 pivot and
+## GeneralizedTime (`YYYYMMDDHHMMSSZ`).
+##
+## ### Parameters
+## - `raw`: Raw stamp string.
+##
+## ### Returns
+## Normalized stamp, or empty when malformed.
+pub function normalize_time_stamp(raw: string) -> string
+    if raw is null
+        return ""
+    end
+    let s = trim(raw)
+    if len(s) == 13 and char_at(s, 12) == "Z"
+        let yy = to_int(substring(s, 0, 2))
+        let cc = "20"
+        if yy >= 50
+            cc = "19"
+        end
+        return cc + s
+    end
+    if len(s) == 15 and char_at(s, 14) == "Z"
+        return s
+    end
+    return ""
+end
+
+## Reads the serial INTEGER near the start of TBSCertificate.
+##
+## ### Parameters
+## - `der`: DER byte array.
+##
+## ### Returns
+## Lowercase hex serial string, or empty when not found.
+pub function parse_serial_hex(der) -> string
+    if der is null or len(der) < 12
+        return ""
+    end
+    let limit = len(der)
+    if limit > 64
+        limit = 64
+    end
+    let i = 0
+    while i + 2 <= limit
+        if der[i] == 2
+            let t = tlv_at(der, i)
+            if t["error"] == "" and t["length"] >= 1 and t["length"] <= 20 and i + t["total_len"] <= len(der)
+                let hex = "0123456789abcdef"
+                let out = ""
+                let k = 0
+                while k < t["length"]
+                    let b = der[i + t["header_len"] + k]
+                    out = out + char_at(hex, bit_and(bit_shr(b, 4), 15)) + char_at(hex, bit_and(b, 15))
+                    k += 1
+                end
+                return out
+            end
+        end
+        i += 1
+    end
+    return ""
+end
+
+## Parses DER bytes into a certificate summary.
+##
+## Missing optional fields stay empty; the fingerprint is always computed.
+##
+## ### Parameters
+## - `der`: DER byte array.
+##
+## ### Returns
+## Populated `TlsCertificate` instance.
+pub function parse_certificate(der) -> TlsCertificate
+    let cert = tls_cert_empty()
+    if der is null or len(der) == 0
+        return cert
+    end
+    cert.der_len = len(der)
+    cert.fingerprint_sha256 = der_fingerprint_sha256(der)
+    let cns = collect_common_names(der)
+    if len(cns) >= 1
+        cert.issuer_cn = cns[0]
+        cert.issuer = "CN=" + cns[0]
+    end
+    if len(cns) >= 2
+        cert.subject_cn = cns[len(cns) - 1]
+        cert.subject = "CN=" + cns[len(cns) - 1]
+    elif len(cns) == 1
+        cert.subject_cn = cns[0]
+        cert.subject = "CN=" + cns[0]
+    end
+    cert.san = collect_dns_names(der)
+    let stamps = collect_time_stamps(der)
+    if len(stamps) >= 1
+        cert.not_before = stamps[0]
+    end
+    if len(stamps) >= 2
+        cert.not_after = stamps[1]
+    end
+    cert.serial_hex = parse_serial_hex(der)
+    return cert
+end
+
+## Parses the first certificate from PEM text.
+##
+## ### Parameters
+## - `pem`: PEM bundle text.
+##
+## ### Returns
+## Parsed `TlsCertificate`, or an empty placeholder when absent.
+pub function parse_certificate_pem(pem) -> TlsCertificate
+    let der = pem_first_cert_der(pem)
+    if len(der) == 0
+        return tls_cert_empty()
+    end
+    return parse_certificate(der)
+end

@@ -1,0 +1,326 @@
+## TLS handshake message builders and parsers.
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Produces structurally valid ClientHello bytes (with SNI/ALPN extensions),
+## parses ServerHello responses, and derives Finished verification data.
+## Bulk key derivation lives in `core/keys.alya`.
+
+import "crypto" as crypto
+import "../types.alya"
+import "./version.alya"
+import "./cipher.alya"
+import "./record.alya"
+
+## Generates a 32-byte client random value.
+##
+## ### Returns
+## Array of 32 byte integers from the cryptographic RNG.
+pub function hello_random() -> array
+    return crypto::random_bytes(32)
+end
+
+## Builds the Server Name Indication extension for a hostname.
+##
+## ### Parameters
+## - `hostname`: DNS name for the `server_name` entry.
+##
+## ### Returns
+## Extension byte array (type `0x0000` with length prefix).
+pub function sni_extension(hostname: string) -> array
+    let host = hostname
+    if host is null
+        host = ""
+    end
+    let name_bytes = []
+    let i = 0
+    while i < len(host)
+        name_bytes.push(ord(char_at(host, i)))
+        i += 1
+    end
+    let entry = [0]
+    let nl = u16_to_bytes(len(name_bytes))
+    entry.push(nl[0])
+    entry.push(nl[1])
+    let k = 0
+    while k < len(name_bytes)
+        entry.push(name_bytes[k])
+        k += 1
+    end
+    let list_len = u16_to_bytes(len(entry))
+    let data = [list_len[0], list_len[1]]
+    let m = 0
+    while m < len(entry)
+        data.push(entry[m])
+        m += 1
+    end
+    let ext_len = u16_to_bytes(len(data))
+    let ext = [0, 0, ext_len[0], ext_len[1]]
+    let n = 0
+    while n < len(data)
+        ext.push(data[n])
+        n += 1
+    end
+    return ext
+end
+
+## Builds the ALPN extension advertising protocol preferences.
+##
+## ### Parameters
+## - `protocols`: Protocol name array (e.g. `["h2", "http/1.1"]`).
+##
+## ### Returns
+## Extension byte array (type `0x0010`), or empty array for no input.
+pub function alpn_extension(protocols) -> array
+    if protocols is null or len(protocols) == 0
+        return []
+    end
+    let names = []
+    let p = 0
+    while p < len(protocols)
+        let proto = protocols[p]
+        if proto is not null and len(proto) > 0 and len(proto) < 256
+            names.push(len(proto))
+            let q = 0
+            while q < len(proto)
+                names.push(ord(char_at(proto, q)))
+                q += 1
+            end
+        end
+        p += 1
+    end
+    if len(names) == 0
+        return []
+    end
+    let list_len = u16_to_bytes(len(names))
+    let data = [list_len[0], list_len[1]]
+    let m = 0
+    while m < len(names)
+        data.push(names[m])
+        m += 1
+    end
+    let ext_len = u16_to_bytes(len(data))
+    let ext = [0, 16, ext_len[0], ext_len[1]]
+    let n = 0
+    while n < len(data)
+        ext.push(data[n])
+        n += 1
+    end
+    return ext
+end
+
+## Builds a complete ClientHello record for the given config.
+##
+## ### Parameters
+## - `config`: Active `TlsConfig` snapshot.
+## - `suites`: Cipher suite preference array (empty means defaults).
+##
+## ### Returns
+## Map with `random`, `suites`, `sni`, `wire` record bytes, and handshake
+## `body` bytes for transcript hashing.
+pub function build_client_hello(config, suites = null) -> map
+    let prefs = suites
+    if prefs is null or len(prefs) == 0
+        prefs = config.cipher_allowlist
+    end
+    if prefs is null or len(prefs) == 0
+        prefs = cipher_default_suites()
+    end
+    let offered = TlsVersion.Tls12
+    if version_compare(config.max_version, TlsVersion.Tls12) > 0
+        offered = TlsVersion.Tls12
+    elif version_compare(config.max_version, TlsVersion.Tls10) < 0
+        offered = TlsVersion.Tls10
+    else
+        offered = config.max_version
+    end
+    let rnd = hello_random()
+    let ver_bytes = u16_to_bytes(offered)
+    let body = [ver_bytes[0], ver_bytes[1]]
+    let r = 0
+    while r < len(rnd)
+        body.push(rnd[r])
+        r += 1
+    end
+    body.push(0)
+    let suite_len = u16_to_bytes(len(prefs) * 2)
+    body.push(suite_len[0])
+    body.push(suite_len[1])
+    let s = 0
+    while s < len(prefs)
+        let sb = u16_to_bytes(prefs[s])
+        body.push(sb[0])
+        body.push(sb[1])
+        s += 1
+    end
+    body.push(1)
+    body.push(0)
+    let exts = sni_extension(config.sni)
+    let alpn = alpn_extension(config.alpn)
+    let a = 0
+    while a < len(alpn)
+        exts.push(alpn[a])
+        a += 1
+    end
+    let ext_len = u16_to_bytes(len(exts))
+    body.push(ext_len[0])
+    body.push(ext_len[1])
+    let e = 0
+    while e < len(exts)
+        body.push(exts[e])
+        e += 1
+    end
+    let hs_len = len(body)
+    let hello = [TlsHandshakeType.ClientHello, bit_and(bit_shr(hs_len, 16), 255), bit_and(bit_shr(hs_len, 8), 255), bit_and(hs_len, 255)]
+    let h = 0
+    while h < len(body)
+        hello.push(body[h])
+        h += 1
+    end
+    let rec = record_encode(TlsContentType.Handshake, TlsVersion.Tls10, hello)
+    return { "random": rnd, "suites": prefs, "sni": config.sni, "version": offered, "body": body, "bytes": rec["bytes"], "wire": rec["wire"] }
+end
+
+## Parses a ServerHello body (without record/handshake headers).
+##
+## ### Parameters
+## - `body`: ServerHello body byte array.
+##
+## ### Returns
+## Map with `version`, `random`, `session_id`, `cipher_suite`, and `error`.
+pub function parse_server_hello(body) -> map
+    let fail = { "version": 0, "random": [], "session_id": "", "cipher_suite": 0, "error": "empty body" }
+    if body is null or len(body) < 38
+        return fail
+    end
+    let ver = body[0] * 256 + body[1]
+    if version_is_supported(ver) == 0
+        return { "version": 0, "random": [], "session_id": "", "cipher_suite": 0, "error": "unsupported server version" }
+    end
+    let rnd = []
+    let i = 0
+    while i < 32
+        rnd.push(body[2 + i])
+        i += 1
+    end
+    let sid_len = body[34]
+    if len(body) < 35 + sid_len + 3
+        return { "version": 0, "random": [], "session_id": "", "cipher_suite": 0, "error": "truncated server hello" }
+    end
+    let sid = []
+    let k = 0
+    while k < sid_len
+        sid.push(body[35 + k])
+        k += 1
+    end
+    let suite = body[35 + sid_len] * 256 + body[35 + sid_len + 1]
+    return { "version": ver, "random": rnd, "session_id": crypto::bytes_to_hex(sid), "cipher_suite": suite, "error": "" }
+end
+
+## Extracts the SNI hostname embedded in a ClientHello body.
+##
+## Scans the extension block for a `server_name` entry of type host_name.
+##
+## ### Parameters
+## - `body`: ClientHello body byte array.
+##
+## ### Returns
+## Hostname string, or empty when absent/unparseable.
+pub function client_hello_sni(body) -> string
+    if body is null or len(body) < 40
+        return ""
+    end
+    let sid_len = body[34]
+    let pos = 35 + sid_len
+    if len(body) < pos + 2
+        return ""
+    end
+    let suite_len = body[pos] * 256 + body[pos + 1]
+    pos = pos + 2 + suite_len + 1
+    if len(body) < pos + 1
+        return ""
+    end
+    pos = pos + 1 + body[pos]
+    if len(body) < pos + 2
+        return ""
+    end
+    let ext_total = body[pos] * 256 + body[pos + 1]
+    pos = pos + 2
+    let end_pos = pos + ext_total
+    if end_pos > len(body)
+        end_pos = len(body)
+    end
+    while pos + 4 <= end_pos
+        let etype = body[pos] * 256 + body[pos + 1]
+        let elen = body[pos + 2] * 256 + body[pos + 3]
+        pos = pos + 4
+        if pos + elen > end_pos
+            break
+        end
+        if etype == 0 and elen >= 5
+            let list_len = body[pos] * 256 + body[pos + 1]
+            if list_len + 2 <= elen and body[pos + 2] == 0
+                let name_len = body[pos + 3] * 256 + body[pos + 4]
+                if 5 + name_len <= elen
+                    let out = ""
+                    let n = 0
+                    while n < name_len
+                        out = out + chr(body[pos + 5 + n])
+                        n += 1
+                    end
+                    return out
+                end
+            end
+        end
+        pos = pos + elen
+    end
+    return ""
+end
+
+## Derives Finished verification data (first 12 HMAC-SHA256 bytes).
+##
+## Mirrors the TLS 1.2 `verify_data` construction in simplified form:
+## `truncate_12(HMAC(master, label + transcript_hash))`.
+##
+## ### Parameters
+## - `master_secret`: Master secret byte array.
+## - `label`: ASCII label (`"client finished"` or `"server finished"`).
+## - `transcript_hash`: Handshake transcript hash byte array.
+##
+## ### Returns
+## 12-byte verification array.
+pub function finished_verify_data(master_secret, label: string, transcript_hash) -> array
+    let msg = []
+    let i = 0
+    while i < len(label)
+        msg.push(ord(char_at(label, i)))
+        i += 1
+    end
+    let t = 0
+    while t < len(transcript_hash)
+        msg.push(transcript_hash[t])
+        t += 1
+    end
+    let mac = crypto::hmac_sha256_bytes(master_secret, msg)
+    let out = []
+    let k = 0
+    while k < 12 and k < len(mac)
+        out.push(mac[k])
+        k += 1
+    end
+    return out
+end
+
+## Hashes a handshake transcript with SHA-256.
+##
+## ### Parameters
+## - `transcript`: Concatenated handshake byte array.
+##
+## ### Returns
+## 32-byte digest array.
+pub function transcript_hash(transcript) -> array
+    let data = transcript
+    if data is null
+        data = []
+    end
+    return crypto::sha256_bytes(data)
+end
