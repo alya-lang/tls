@@ -14,6 +14,8 @@ import "../core/record.alya"
 import "../core/handshake.alya"
 import "../core/keys.alya"
 import "../core/protect.alya"
+import "../core/ecdhe.alya"
+import "../cert/x509.alya"
 import "../io/raw.alya"
 import "./client.alya"
 
@@ -105,6 +107,9 @@ pub function tls_handshake_complete(ctx: TlsContext) -> TlsContext
         return ctx.fail("handshake not in negotiable state")
     end
     let suite = ctx.session.cipher_suite
+    if suite_needs_ske(suite) == 1
+        return tls_handshake_complete_ecdhe(ctx)
+    end
     if suite != SUITE_RSA_AES128_GCM_SHA256
         return ctx.fail("only RSA key exchange supported in v1")
     end
@@ -172,6 +177,170 @@ pub function tls_handshake_complete(ctx: TlsContext) -> TlsContext
     while i < len(cvd)
         fin_body.push(cvd[i])
         i += 1
+    end
+    let ccs = record_encode(TlsContentType.ChangeCipherSpec, ctx.session.version, [1])
+    if raw_send(ctx.sock, ccs["bytes"]) < 0
+        return ctx.fail("failed to send ChangeCipherSpec")
+    end
+    let fin_wire = tls_protect_record(ctx, TlsContentType.Handshake, fin_body)
+    if len(fin_wire) == 0
+        return ctx.fail("failed to protect Finished")
+    end
+    if raw_send(ctx.sock, fin_wire) < 0
+        return ctx.fail("failed to send Finished")
+    end
+    transcript = tls_transcript_append(transcript, TlsHandshakeType.Finished, hs_slice(fin_body, 4, len(fin_body) - 4))
+    ctx.keys["transcript"] = transcript
+    let expect = finished_verify_data(master, "server finished", transcript_hash(transcript))
+    let got = tls_read_server_finished(ctx)
+    if len(got) == 0
+        return ctx.fail("no server Finished received")
+    end
+    if crypto::bytes_to_hex(got) != crypto::bytes_to_hex(expect)
+        return ctx.fail("server Finished mismatch")
+    end
+    ctx.session.state = TlsState.Established
+    ctx.state = TlsState.Established
+    return ctx
+end
+
+## Completes an ECDHE handshake: SKE verify, ECDH, CCS/Finished.
+##
+## Never throws: failures return a `Failed` context with `last_error`.
+## The ephemeral premaster is the ECDH x-coordinate without the RSA
+## version prefix; everything after key agreement matches the RSA close.
+##
+## ### Parameters
+## - `ctx`: Handshaked `TlsContext` with leaf, SKE, transcript, randoms.
+##
+## ### Returns
+## Established context, or failed.
+pub function tls_handshake_complete_ecdhe(ctx: TlsContext) -> TlsContext
+    if ctx is null or ctx.sock < 0
+        return ctx.fail("no live handshake to complete")
+    end
+    if ctx.state != TlsState.Handshaked
+        return ctx.fail("handshake not in negotiable state")
+    end
+    let suite = ctx.session.cipher_suite
+    if suite_needs_ske(suite) == 0
+        return ctx.fail("not an ECDHE suite")
+    end
+    if cipher_is_aead(suite) == 0
+        return ctx.fail("non-AEAD ECDHE suite not terminated here")
+    end
+    let ske = ctx.keys["ske_body"]
+    if ske is null or len(ske) == 0
+        return ctx.fail("no ServerKeyExchange received")
+    end
+    let parsed = ecdhe_parse_ske(ske)
+    if parsed["error"] != ""
+        return ctx.fail("ServerKeyExchange parse error: " + parsed["error"])
+    end
+    let leaf = ctx.keys["leaf_der"]
+    if leaf is null or len(leaf) == 0
+        return ctx.fail("no server certificate captured")
+    end
+    let cli_rand = ctx.keys["client_random"]
+    let srv_rand = ctx.keys["server_random"]
+    if cli_rand is null or srv_rand is null
+        return ctx.fail("handshake randoms missing")
+    end
+    let signed_input = ecdhe_sign_input(cli_rand, srv_rand, parsed["params"])
+    if suite_is_ecdhe_rsa(suite) == 1
+        if parsed["sig_id"] != ECDHE_SIG_RSA
+            return ctx.fail("ServerKeyExchange not RSA-signed")
+        end
+        let pubkey = crypto::rsa_parse_pubkey(leaf)
+        if pubkey["error"] != ""
+            return ctx.fail("server RSA key unparseable: " + pubkey["error"])
+        end
+        if crypto::rsa_verify(pubkey["n"], pubkey["e"], "sha256", signed_input, parsed["sig"]) == 0
+            return ctx.fail("ServerKeyExchange RSA signature invalid")
+        end
+    else
+        if parsed["sig_id"] != ECDHE_SIG_ECDSA
+            return ctx.fail("ServerKeyExchange not ECDSA-signed")
+        end
+        let spki = cert_spki_bytes(leaf)
+        if len(spki) == 0
+            return ctx.fail("server certificate SPKI unreadable")
+        end
+        let ecpub = crypto::ec_parse_spki_pubkey(spki)
+        if ecpub["error"] != ""
+            return ctx.fail("server EC key unparseable: " + ecpub["error"])
+        end
+        let digest = crypto::sha256_bytes(signed_input)
+        if crypto::ecdsa_verify_hash(ecpub["pub"], digest, parsed["sig"]) == 0
+            return ctx.fail("ServerKeyExchange ECDSA signature invalid")
+        end
+    end
+    let eph_pub = []
+    let pre = []
+    if parsed["curve"] == ECDHE_CURVE_X25519
+        let xpriv = crypto::random_bytes(32)
+        let base = [9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        eph_pub = crypto::x25519(xpriv, base)
+        if len(eph_pub) != 32
+            return ctx.fail("ephemeral key generation failed")
+        end
+        pre = crypto::x25519(xpriv, parsed["pub"])
+        if len(pre) != 32
+            return ctx.fail("ECDH agreement failed")
+        end
+    else
+        let eph = crypto::p256_keygen()
+        if len(eph["pub"]) != 65
+            return ctx.fail("ephemeral key generation failed")
+        end
+        eph_pub = eph["pub"]
+        let agreed = crypto::p256_ecdh(eph["priv"], parsed["pub"])
+        if agreed["error"] != ""
+            return ctx.fail("ECDH agreement failed: " + agreed["error"])
+        end
+        pre = agreed["secret"]
+    end
+    let cke_pt = ecdhe_build_cke_body(eph_pub)
+    if len(cke_pt) == 0
+        return ctx.fail("failed to encode ClientKeyExchange")
+    end
+    let cke_body = [TlsHandshakeType.ClientKeyExchange, 0, 0, 0]
+    let q = 0
+    while q < len(cke_pt)
+        cke_body.push(cke_pt[q])
+        q += 1
+    end
+    let cke_len = len(cke_body) - 4
+    cke_body[1] = bit_and(bit_shr(cke_len, 16), 255)
+    cke_body[2] = bit_and(bit_shr(cke_len, 8), 255)
+    cke_body[3] = bit_and(cke_len, 255)
+    let cke_rec = record_encode(TlsContentType.Handshake, ctx.session.version, cke_body)
+    if raw_send(ctx.sock, cke_rec["bytes"]) < 0
+        return ctx.fail("failed to send ClientKeyExchange")
+    end
+    let transcript = ctx.keys["transcript"]
+    transcript = tls_transcript_append(transcript, TlsHandshakeType.ClientKeyExchange, hs_slice(cke_body, 4, len(cke_body) - 4))
+    let master = master_secret(pre, cli_rand, srv_rand)
+    let kb = key_block(master, srv_rand, cli_rand, 40)
+    let parts = split_key_block(kb, 0, 16, 4)
+    if len(parts["client_key"]) == 0
+        return ctx.fail("key block derivation failed")
+    end
+    ctx.keys["master"] = master
+    ctx.keys["ckey"] = parts["client_key"]
+    ctx.keys["skey"] = parts["server_key"]
+    ctx.keys["civ"] = parts["client_iv"]
+    ctx.keys["siv"] = parts["server_iv"]
+    ctx.keys["seq_send"] = 0
+    ctx.keys["seq_recv"] = 0
+    ctx.keys["transcript"] = transcript
+    let thash = transcript_hash(transcript)
+    let cvd = finished_verify_data(master, "client finished", thash)
+    let fin_body = [TlsHandshakeType.Finished, 0, 0, 12]
+    q = 0
+    while q < len(cvd)
+        fin_body.push(cvd[q])
+        q += 1
     end
     let ccs = record_encode(TlsContentType.ChangeCipherSpec, ctx.session.version, [1])
     if raw_send(ctx.sock, ccs["bytes"]) < 0

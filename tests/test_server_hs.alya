@@ -42,14 +42,14 @@ function main()
     runner_assert_eq(r, cert_body[2], 8, "chain total = entry header + der")
     runner_assert_eq(r, cert_body[5], 5, "entry length byte")
 
-    # 5. Server defaults prefer RSA-only negotiation
+    # 5. Server defaults prefer ECDHE with RSA fallback
     let srv = tls::server(18443, "127.0.0.1")
     let nego = tls::tls_server_negotiate(srv, [49199, 156], ["h2"])
     runner_assert_str_eq(r, nego["error"], "", "negotiation clean")
-    runner_assert_eq(r, nego["suite"], 156, "RSA suite forced by default allowlist")
+    runner_assert_eq(r, nego["suite"], 49199, "ECDHE preferred by default allowlist")
     runner_assert_str_eq(r, nego["alpn"], "h2", "ALPN negotiated")
-    let no_overlap = tls::tls_server_negotiate(srv, [49199], ["h2"])
-    runner_assert_eq(r, no_overlap["suite"], 0, "ECDHE-only offer rejected")
+    let rsa_only = tls::tls_server_negotiate(srv, [156], ["h2"])
+    runner_assert_eq(r, rsa_only["suite"], 156, "RSA-only offer falls back")
 
     # 6. Accept gates without network
     runner_assert_eq(r, tls::tls_server_has_identity(srv), 0, "no identity yet")

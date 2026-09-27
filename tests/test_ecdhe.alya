@@ -1,0 +1,122 @@
+## Test suite for ECDHE framing and ECDSA chain verification.
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+import "std/test"
+import "../src/lib.alya" as tls
+import "crypto" as crypto
+
+function ec_ca_pem() -> string
+    return "-----BEGIN CERTIFICATE-----\nMIIBgzCCASmgAwIBAgIUG6I26FgykVThdUlsViBU33eMBRYwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMZWMtdGVzdC1yb290MB4XDTI2MDkyNzAxNTIyMloXDTI2MDkz\nMDAxNTIyMlowFzEVMBMGA1UEAwwMZWMtdGVzdC1yb290MFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEzug5pl2h0f+9Wb64VJ0Udu84Sx2TjczWtKG+mlS9S8MnnVW6\nf4MwMVyT+s9n9JOoOO7V9Iuz4uvBXxGc6SjmJ6NTMFEwHQYDVR0OBBYEFCB3Ngrg\n07IjLiB7yH0BMXGU7XP3MB8GA1UdIwQYMBaAFCB3Ngrg07IjLiB7yH0BMXGU7XP3\nMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIhAKwXXp1EHjqEpjqq\nBl6eSSPh+5qAOUwE0q/fY8ES2GusAiB+T/+g+Acw8iMuc0hXGjiANwvbsjSoiFwu\nsLv2IBlP4w==\n-----END CERTIFICATE-----\n"
+end
+
+function ec_leaf_pem() -> string
+    return "-----BEGIN CERTIFICATE-----\nMIIBczCCARigAwIBAgIUZf5hTk6jKUq1PxH605R0f5VfQVIwCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAwwMZWMtdGVzdC1yb290MB4XDTI2MDkyNzAxNTIyMloXDTI2MDky\nOTAxNTIyMlowFzEVMBMGA1UEAwwMbGVhZi5leGFtcGxlMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAE6vCqojIg+m/TnZ5ecxjskiLO7Wl8BvbDda7YFnJJyUbOpeq0\ncPztKBdZhzXU4WEnJNrWmo7l40SwC/+8OA/jWqNCMEAwHQYDVR0OBBYEFCa8zqwb\nTmFf/2NDYzm9lxtuMkuQMB8GA1UdIwQYMBaAFCB3Ngrg07IjLiB7yH0BMXGU7XP3\nMAoGCCqGSM49BAMCA0kAMEYCIQDYjEZ2d5FTR37KuEK79HUVNtVXFedmfl64aLQ1\nOGHKUwIhAPcVRrAVHXJXyLCZ03sfU0VUZWNkty4EGob7bh9p7Qpt\n-----END CERTIFICATE-----\n"
+end
+
+function ec_leaf_key_pem() -> string
+    return "-----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIEmVGzQ5a2Gd8fmtr+xAIWelT8kDSmPG6K261pzZh1SxoAoGCCqGSM49\nAwEHoUQDQgAE6vCqojIg+m/TnZ5ecxjskiLO7Wl8BvbDda7YFnJJyUbOpeq0cPzt\nKBdZhzXU4WEnJNrWmo7l40SwC/+8OA/jWg==\n-----END EC PRIVATE KEY-----\n"
+end
+
+function main()
+    test_suite("ECDHE Tests")
+    let r = runner_new()
+
+    # 1. Suite predicates.
+    runner_assert_eq(r, tls::suite_is_ecdhe_rsa(49199), 1, "C02F is ecdhe-rsa")
+    runner_assert_eq(r, tls::suite_is_ecdhe_rsa(156), 0, "RSA suite is not ecdhe")
+    runner_assert_eq(r, tls::suite_is_ecdsa(49195), 1, "C02B is ecdsa")
+    runner_assert_eq(r, tls::suite_needs_ske(156), 0, "RSA needs no SKE")
+    runner_assert_eq(r, tls::suite_needs_ske(49195), 1, "ECDSA needs SKE")
+
+    # 2. SKE build/parse roundtrip with a fake signature.
+    let pt65 = [4]
+    let pi = 0
+    while pi < 64
+        pt65.push(pi + 1)
+        pi += 1
+    end
+    let params = tls::ecdhe_server_params(pt65)
+    runner_assert_eq(r, len(params), 69, "params length")
+    let body = tls::ecdhe_build_ske_body(params, 4, 1, [1, 2, 3])
+    let parsed = tls::ecdhe_parse_ske(body)
+    runner_assert_str_eq(r, parsed["error"], "", "ske parses")
+    runner_assert_eq(r, len(parsed["pub"]), 65, "ske point length")
+    runner_assert_eq(r, parsed["sig_id"], 1, "ske sig id")
+    runner_assert_eq(r, len(parsed["sig"]), 3, "ske sig length")
+    runner_assert_eq(r, tls::ecdhe_parse_ske([1, 2, 3])["error"] != "", 1, "short ske rejected")
+    let badparams = [3, 0, 24, 65]
+    pi = 0
+    while pi < len(pt65)
+        badparams.push(pt65[pi])
+        pi += 1
+    end
+    let badcurve = tls::ecdhe_build_ske_body(badparams, 4, 1, [7])
+    runner_assert_eq(r, tls::ecdhe_parse_ske(badcurve)["error"] != "", 1, "wrong curve rejected")
+
+    # 3. CKE roundtrip.
+    let cke = tls::ecdhe_build_cke_body(pt65)
+    let cked = tls::ecdhe_parse_cke(cke)
+    runner_assert_str_eq(r, cked["error"], "", "cke parses")
+    runner_assert_eq(r, len(cked["pub"]), 65, "cke point length")
+    runner_assert_eq(r, cked["curve"], 23, "cke curve P-256")
+    runner_assert_eq(r, tls::ecdhe_parse_cke([5])["error"] != "", 1, "short cke rejected")
+
+    # 3b. X25519 SKE/CKE framing roundtrip.
+    let xpub = crypto::hex_to_bytes("00d31a6603d3aa9b93d62c3e670171bc81cfbee4d8a299be899e1a220de23246")
+    let xparams = tls::ecdhe_server_params(xpub)
+    runner_assert_eq(r, len(xparams), 36, "x25519 params length")
+    let xbody = tls::ecdhe_build_ske_body(xparams, 4, 1, [9, 9])
+    let xp = tls::ecdhe_parse_ske(xbody)
+    runner_assert_str_eq(r, xp["error"], "", "x25519 ske parses")
+    runner_assert_eq(r, xp["curve"], 29, "x25519 curve id")
+    runner_assert_eq(r, len(xp["pub"]), 32, "x25519 point length")
+    let xcke = tls::ecdhe_build_cke_body(xpub)
+    let xcked = tls::ecdhe_parse_cke(xcke)
+    runner_assert_str_eq(r, xcked["error"], "", "x25519 cke parses")
+    runner_assert_eq(r, xcked["curve"], 29, "x25519 cke curve")
+
+    # 4. EC chain fixtures parse and link-verify.
+    let ca_der = tls::pem_first_cert_der(ec_ca_pem())
+    let leaf_der = tls::pem_first_cert_der(ec_leaf_pem())
+    runner_assert_true(r, len(ca_der) > 0, "ca der present")
+    runner_assert_true(r, len(leaf_der) > 0, "leaf der present")
+    let leaf = tls::parse_certificate(leaf_der)
+    let ca = tls::parse_certificate(ca_der)
+    runner_assert_str_eq(r, leaf.subject_cn, "leaf.example", "leaf cn")
+    let tbs = tls::cert_tbs_bytes(leaf_der)
+    runner_assert_true(r, len(tbs) > 0, "tbs extracted")
+    let sigalg = tls::cert_sig_alg_oid(leaf_der)
+    runner_assert_eq(r, tls::oid_is_ecdsa_sha256(sigalg), 1, "leaf sig alg ecdsa-sha256")
+    runner_assert_true(r, len(tls::cert_sig_bytes(leaf_der)) > 0, "leaf sig extracted")
+    runner_assert_true(r, len(tls::cert_spki_bytes(leaf_der)) > 0, "leaf spki extracted")
+    runner_assert_eq(r, tls::cert_verify_link(leaf_der, ca_der), 1, "leaf-ca link verifies")
+    let chain = [leaf, ca]
+    let sigs = tls::chain_verify_signatures(chain)
+    runner_assert_eq(r, sigs["ok"], 1, "ec chain signatures verify")
+
+    # 5. SKE ECDSA sign/verify roundtrip with the leaf key.
+    let key_der = crypto::pem_to_der(ec_leaf_key_pem(), "EC PRIVATE KEY")
+    let eckey = crypto::ec_parse_sec1_priv(key_der)
+    runner_assert_str_eq(r, eckey["error"], "", "leaf ec key parses")
+    let eph = crypto::p256_pub_from_priv(crypto::hex_to_bytes("06b9d3dad2e1b8c1c05b985c4e5d4942d4e5cd4b6d5b6d6546bec651d6840b28"))
+    let params2 = tls::ecdhe_server_params(eph)
+    let cli_rand = crypto::hex_to_bytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+    let srv_rand = crypto::hex_to_bytes("202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f")
+    let signed_input = tls::ecdhe_sign_input(cli_rand, srv_rand, params2)
+    let esig = crypto::ecdsa_sign_hash(eckey["priv"], crypto::sha256_bytes(signed_input))
+    runner_assert_str_eq(r, esig["error"], "", "ske ecdsa signs")
+    let ske2 = tls::ecdhe_build_ske_body(params2, 4, 3, esig["der"])
+    let p2 = tls::ecdhe_parse_ske(ske2)
+    runner_assert_str_eq(r, p2["error"], "", "signed ske parses")
+    let leaf_spki = tls::cert_spki_bytes(leaf_der)
+    let leaf_pub = crypto::ec_parse_spki_pubkey(leaf_spki)
+    runner_assert_str_eq(r, leaf_pub["error"], "", "leaf spki parses")
+    let ok = crypto::ecdsa_verify_hash(leaf_pub["pub"], crypto::sha256_bytes(tls::ecdhe_sign_input(cli_rand, srv_rand, p2["params"])), p2["sig"])
+    runner_assert_eq(r, ok, 1, "ske ecdsa verifies")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

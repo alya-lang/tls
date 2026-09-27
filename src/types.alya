@@ -31,6 +31,7 @@ pub enum TlsHandshakeType
     ClientHello = 1,
     ServerHello = 2,
     Certificate = 11,
+    ServerKeyExchange = 12,
     ServerHelloDone = 14,
     ClientKeyExchange = 16,
     Finished = 20

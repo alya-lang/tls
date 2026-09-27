@@ -25,6 +25,9 @@ pub function suite_uses_aes_gcm(suite: int) -> int
     if suite == SUITE_ECDHE_RSA_AES128_GCM_SHA256 or suite == SUITE_ECDHE_RSA_AES256_GCM_SHA384 or suite == SUITE_RSA_AES128_GCM_SHA256
         return 1
     end
+    if suite == SUITE_ECDHE_ECDSA_AES128_GCM_SHA256
+        return 1
+    end
     return 0
 end
 

@@ -9,6 +9,7 @@ import "crypto" as crypto
 import "../types.alya"
 import "../ffi.alya"
 import "./pem.alya"
+import "./x509.alya"
 
 ## Matches one DNS pattern against a hostname (case-insensitive).
 ##
@@ -222,12 +223,55 @@ pub function chain_verify_linkage(chain, now_stamp: string = "") -> map
     return { "ok": 1, "length": len(chain), "detail": "chain linkage verified (signatures unchecked)" }
 end
 
-## Verifies RSA signatures across an ordered leaf-to-root chain.
+## Verifies one certificate signature against its issuer DER.
 ##
-## Each certificate's signature is checked against its parent public key;
-## the root must be self-signed (no external trust store exists yet, so
-## unknown roots fail closed). Non-RSA issuers report as unsupported —
-## ECDSA path validation is a tracked extension.
+## Dispatches on the subject signature algorithm: RSA PKCS#1 v1.5 via the
+## issuer RSA key, or ECDSA via the issuer secp256r1 key. Both hash the
+## exact TBSCertificate bytes with SHA-256.
+##
+## ### Parameters
+## - `child_der`: Subject certificate DER bytes.
+## - `parent_der`: Issuer certificate DER bytes.
+##
+## ### Returns
+## `1` on valid signature, `0` otherwise.
+pub function cert_verify_link(child_der, parent_der) -> int
+    if child_der is null or parent_der is null or len(child_der) == 0 or len(parent_der) == 0
+        return 0
+    end
+    let tbs = cert_tbs_bytes(child_der)
+    let sig = cert_sig_bytes(child_der)
+    let alg = cert_sig_alg_oid(child_der)
+    if len(tbs) == 0 or len(sig) == 0
+        return 0
+    end
+    if oid_is_rsa_sha256(alg) == 1
+        let parent_key = crypto::rsa_parse_pubkey(parent_der)
+        if parent_key["error"] != ""
+            return 0
+        end
+        return crypto::rsa_verify_cert(child_der, parent_key["n"], parent_key["e"])
+    end
+    if oid_is_ecdsa_sha256(alg) == 1
+        let spki = cert_spki_bytes(parent_der)
+        if len(spki) == 0
+            return 0
+        end
+        let eckey = crypto::ec_parse_spki_pubkey(spki)
+        if eckey["error"] != ""
+            return 0
+        end
+        let digest = crypto::sha256_bytes(tbs)
+        return crypto::ecdsa_verify_hash(eckey["pub"], digest, sig)
+    end
+    return 0
+end
+
+## Verifies RSA/ECDSA signatures across an ordered leaf-to-root chain.
+##
+## Each certificate's signature is checked against its parent public key
+## (RSA or secp256r1); the root must be self-signed (no external trust
+## store exists yet, so unknown roots fail closed).
 ##
 ## ### Parameters
 ## - `chain`: Ordered certificate array (leaf first, DER retained).
@@ -247,24 +291,16 @@ pub function chain_verify_signatures(chain) -> map
     end
     i = 0
     while i + 1 < len(chain)
-        let parent_key = crypto::rsa_parse_pubkey(chain[i + 1].der)
-        if parent_key["error"] != ""
-            return { "ok": 0, "checked": i, "detail": "non-RSA issuer at position " + str(i + 1) + " (ECDSA unsupported)" }
-        end
-        if crypto::rsa_verify_cert(chain[i].der, parent_key["n"], parent_key["e"]) == 0
+        if cert_verify_link(chain[i].der, chain[i + 1].der) == 0
             return { "ok": 0, "checked": i, "detail": "signature invalid at position " + str(i) }
         end
         i += 1
     end
     let root = chain[len(chain) - 1]
-    let root_key = crypto::rsa_parse_pubkey(root.der)
-    if root_key["error"] != ""
-        return { "ok": 0, "checked": i, "detail": "non-RSA root (ECDSA unsupported)" }
-    end
     if cert_name_eq(root.subject, root.issuer) == 0 and cert_name_eq(root.subject_cn, root.issuer_cn) == 0
         return { "ok": 0, "checked": i, "detail": "root is not self-signed (no trust store)" }
     end
-    if crypto::rsa_verify_cert(root.der, root_key["n"], root_key["e"]) == 0
+    if cert_verify_link(root.der, root.der) == 0
         return { "ok": 0, "checked": i, "detail": "root self-signature invalid" }
     end
     return { "ok": 1, "checked": len(chain), "detail": "all signatures verified" }

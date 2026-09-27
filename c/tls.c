@@ -52,6 +52,7 @@ int alya_tls_cipher_strength(int suite) {
         case 0xC02F: /* ECDHE-RSA-AES128-GCM-SHA256 */
         case 0xC030: /* ECDHE-RSA-AES256-GCM-SHA384 */
         case 0xCCA8: /* ECDHE-RSA-CHACHA20-POLY1305 */
+        case 0xC02B: /* ECDHE-ECDSA-AES128-GCM-SHA256 */
             return 3;
         /* ECDHE + CBC with forward secrecy. */
         case 0xC027: /* ECDHE-RSA-AES128-SHA256 */
@@ -75,6 +76,7 @@ int alya_tls_is_aead(int suite) {
         case 0xC02F:
         case 0xC030:
         case 0xCCA8:
+        case 0xC02B:
         case 0x009C:
         case 0x009D:
             return 1;

@@ -155,6 +155,8 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
     let msg_buf = []
     let cert_body = []
     let cert_found = 0
+    let ske_body = []
+    let ske_found = 0
     let done_seen = 0
     let rounds = 0
     while rounds < 17
@@ -198,6 +200,10 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
                 cert_body = msg_buf
                 cert_found = 1
             end
+            if msg_type == TlsHandshakeType.ServerKeyExchange
+                ske_body = msg_buf
+                ske_found = 1
+            end
             if msg_type == TlsHandshakeType.ServerHelloDone
                 done_seen = 1
             end
@@ -236,6 +242,9 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
             return ctx.fail("peer certificate message was empty")
         end
         ctx.keys["leaf_der"] = chain[0].der
+        if ske_found == 1
+            ctx.keys["ske_body"] = ske_body
+        end
         tls_verify_session(ctx, chain[0], "", "")
         return ctx
     end

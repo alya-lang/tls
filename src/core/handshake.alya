@@ -111,13 +111,14 @@ end
 
 ## Builds the signature_algorithms extension (RFC 8446 section 4.2.3).
 ##
-## Without it, strict servers reject the hello (no shared cipher/suite).
-## Offers ECDSA + RSA-PSS + PKCS#1 with SHA-256/384.
+## Offers only schemes this package verifies: ECDSA secp256r1 + RSA
+## PKCS#1 v1.5 with SHA-256/384. PSS and P-384 stay unadvertised until
+## their verifiers land, so peers never select an unverifiable scheme.
 ##
 ## ### Returns
 ## Extension byte array (type `0x000d`).
 pub function sigalgs_extension() -> array
-    let schemes = [1027, 2052, 1025, 1283, 2053, 1281]
+    let schemes = [1027, 1025, 1281]
     let data = u16_to_bytes(len(schemes) * 2)
     let s = 0
     while s < len(schemes)

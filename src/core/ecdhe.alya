@@ -1,0 +1,248 @@
+## TLS 1.2 ECDHE key-exchange framing (RFC 4492 + RFC 5289).
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Builds and parses ServerKeyExchange / ClientKeyExchange bodies for the
+## secp256r1 named curve with RSA or ECDSA signatures. Point arithmetic
+## stays in `crypto` (p256/ECDSA); wire hashing uses SHA-256.
+
+import "crypto" as crypto
+import "../types.alya"
+
+## Named-curve id for secp256r1 (the only curve this server sends).
+pub const ECDHE_CURVE_P256 = 23
+
+## Named-curve id for X25519 (client-side interop only).
+pub const ECDHE_CURVE_X25519 = 29
+
+## Signature hash id for SHA-256 (SignatureAndHashAlgorithm).
+pub const ECDHE_HASH_SHA256 = 4
+
+## Signature scheme id for RSA PKCS#1 v1.5.
+pub const ECDHE_SIG_RSA = 1
+
+## Signature scheme id for ECDSA.
+pub const ECDHE_SIG_ECDSA = 3
+
+## Returns 1 when the suite negotiates ECDHE with an RSA certificate.
+pub function suite_is_ecdhe_rsa(suite: int) -> int
+    if suite == SUITE_ECDHE_RSA_AES128_GCM_SHA256 or suite == SUITE_ECDHE_RSA_AES256_GCM_SHA384
+        return 1
+    end
+    if suite == SUITE_ECDHE_RSA_CHACHA20_POLY1305 or suite == SUITE_ECDHE_RSA_AES128_SHA256
+        return 1
+    end
+    return 0
+end
+
+## Returns 1 when the suite negotiates ECDHE with an ECDSA certificate.
+pub function suite_is_ecdsa(suite: int) -> int
+    if suite == SUITE_ECDHE_ECDSA_AES128_GCM_SHA256
+        return 1
+    end
+    return 0
+end
+
+## Returns 1 when the suite needs an ephemeral ServerKeyExchange flight.
+pub function suite_needs_ske(suite: int) -> int
+    if suite_is_ecdhe_rsa(suite) == 1 or suite_is_ecdsa(suite) == 1
+        return 1
+    end
+    return 0
+end
+
+## Builds the ServerECDHParams block for a P-256 or X25519 point.
+##
+## Layout: curve_type(3) + named_curve + point_len(1) + point. P-256
+## points are 65-byte uncompressed; X25519 points are 32-byte raw.
+##
+## ### Returns
+## Parameter bytes, or empty on bad input.
+pub function ecdhe_server_params(point) -> array
+    let out = []
+    if point is null
+        return out
+    end
+    if len(point) == 65 and point[0] == 4
+        out.push(3)
+        out.push(0)
+        out.push(ECDHE_CURVE_P256)
+        out.push(65)
+    elif len(point) == 32
+        out.push(3)
+        out.push(0)
+        out.push(ECDHE_CURVE_X25519)
+        out.push(32)
+    else
+        return out
+    end
+    let i = 0
+    while i < len(point)
+        out.push(point[i])
+        i += 1
+    end
+    return out
+end
+
+## Assembles the exact bytes covered by a ServerKeyExchange signature.
+pub function ecdhe_sign_input(client_random, server_random, params) -> array
+    let out = []
+    let i = 0
+    while i < len(client_random)
+        out.push(client_random[i])
+        i += 1
+    end
+    i = 0
+    while i < len(server_random)
+        out.push(server_random[i])
+        i += 1
+    end
+    i = 0
+    while i < len(params)
+        out.push(params[i])
+        i += 1
+    end
+    return out
+end
+
+## Builds a full ServerKeyExchange body (params + sig alg + signature).
+##
+## ### Returns
+## Body bytes (without handshake header), or empty on bad input.
+pub function ecdhe_build_ske_body(params, hash_id: int, sig_id: int, sig) -> array
+    let out = []
+    if params is null or len(params) == 0 or sig is null or len(sig) == 0
+        return out
+    end
+    let i = 0
+    while i < len(params)
+        out.push(params[i])
+        i += 1
+    end
+    out.push(hash_id)
+    out.push(sig_id)
+    out.push(bit_and(bit_shr(len(sig), 8), 255))
+    out.push(bit_and(len(sig), 255))
+    i = 0
+    while i < len(sig)
+        out.push(sig[i])
+        i += 1
+    end
+    return out
+end
+
+## Parses a ServerKeyExchange body into params, point, and signature.
+##
+## Accepts secp256r1 (65-byte uncompressed point) and X25519 (32-byte
+## point), both with SHA-256 signatures.
+##
+## ### Returns
+## Map with `pub`, `curve`, `params`, `hash_id`, `sig_id`, `sig`, `error`.
+pub function ecdhe_parse_ske(body) -> map
+    let fail = { "pub": [], "curve": 0, "params": [], "hash_id": 0, "sig_id": 0, "sig": [], "error": "malformed ServerKeyExchange" }
+    if body is null or len(body) < 8
+        return fail
+    end
+    if body[0] != 3 or body[1] != 0
+        return { "pub": [], "curve": 0, "params": [], "hash_id": 0, "sig_id": 0, "sig": [], "error": "unsupported ECDHE curve" }
+    end
+    let curve = body[2]
+    let want_len = 0
+    if curve == ECDHE_CURVE_P256
+        want_len = 65
+    elif curve == ECDHE_CURVE_X25519
+        want_len = 32
+    else
+        return { "pub": [], "curve": 0, "params": [], "hash_id": 0, "sig_id": 0, "sig": [], "error": "unsupported ECDHE curve" }
+    end
+    let plen = body[3]
+    if plen != want_len or len(body) < 4 + plen + 4
+        return fail
+    end
+    let point = []
+    let i = 0
+    while i < plen
+        point.push(body[4 + i])
+        i += 1
+    end
+    if want_len == 65 and point[0] != 4
+        return { "pub": [], "curve": 0, "params": [], "hash_id": 0, "sig_id": 0, "sig": [], "error": "server point must be uncompressed" }
+    end
+    let params = []
+    i = 0
+    while i < 4 + plen
+        params.push(body[i])
+        i += 1
+    end
+    let pos = 4 + plen
+    let hash_id = body[pos]
+    let sig_id = body[pos + 1]
+    if hash_id != ECDHE_HASH_SHA256
+        return { "pub": [], "params": [], "hash_id": 0, "sig_id": 0, "sig": [], "error": "ServerKeyExchange needs SHA-256" }
+    end
+    let slen = body[pos + 2] * 256 + body[pos + 3]
+    if slen <= 0 or pos + 4 + slen != len(body)
+        return fail
+    end
+    let sig = []
+    i = 0
+    while i < slen
+        sig.push(body[pos + 4 + i])
+        i += 1
+    end
+    return { "pub": point, "curve": curve, "params": params, "hash_id": hash_id, "sig_id": sig_id, "sig": sig, "error": "" }
+end
+
+## Builds a ClientKeyExchange body carrying one ECDHE point.
+pub function ecdhe_build_cke_body(point) -> array
+    let out = []
+    if point is null
+        return out
+    end
+    if len(point) == 65 and point[0] == 4
+        out.push(65)
+    elif len(point) == 32
+        out.push(32)
+    else
+        return out
+    end
+    let i = 0
+    while i < len(point)
+        out.push(point[i])
+        i += 1
+    end
+    return out
+end
+
+## Parses a ClientKeyExchange body into the peer point.
+##
+## Accepts 65-byte uncompressed P-256 points and 32-byte X25519 points.
+##
+## ### Returns
+## Map with `pub`, `curve` (23/29, 0 unknown), and `error` fields.
+pub function ecdhe_parse_cke(body) -> map
+    let fail = { "pub": [], "curve": 0, "error": "malformed ClientKeyExchange" }
+    if body is null or len(body) < 2
+        return fail
+    end
+    let plen = body[0]
+    if plen != 65 and plen != 32
+        return fail
+    end
+    if len(body) != 1 + plen
+        return fail
+    end
+    if plen == 65 and body[1] != 4
+        return fail
+    end
+    let point = []
+    let i = 1
+    while i < len(body)
+        point.push(body[i])
+        i += 1
+    end
+    let curve = ECDHE_CURVE_P256
+    if plen == 32
+        curve = ECDHE_CURVE_X25519
+    end
+    return { "pub": point, "curve": curve, "error": "" }
+end

@@ -421,6 +421,192 @@ pub function parse_certificate_chain(body) -> array
     return out
 end
 
+## Extracts the TBSCertificate bytes of a DER certificate.
+##
+## Navigates the outer `Certificate` sequence deterministically instead of
+## scanning, so signature verification hashes exactly the encoded TBS.
+##
+## ### Parameters
+## - `der`: DER certificate byte array.
+##
+## ### Returns
+## TBS byte array (empty on malformed input).
+pub function cert_tbs_bytes(der) -> array
+    let out = []
+    if der is null or len(der) == 0
+        return out
+    end
+    let outer = tlv_at(der, 0)
+    if outer["error"] != "" or outer["tag"] != 48
+        return out
+    end
+    let pos = outer["header_len"]
+    let tbs = tlv_at(der, pos)
+    if tbs["error"] != "" or tbs["tag"] != 48
+        return out
+    end
+    if pos + tbs["total_len"] > len(der)
+        return out
+    end
+    return chain_slice(der, pos, tbs["total_len"])
+end
+
+## Extracts the outer signatureAlgorithm OID body of a certificate.
+##
+## ### Parameters
+## - `der`: DER certificate byte array.
+##
+## ### Returns
+## OID body byte array (empty on malformed input).
+pub function cert_sig_alg_oid(der) -> array
+    let out = []
+    if der is null or len(der) == 0
+        return out
+    end
+    let outer = tlv_at(der, 0)
+    if outer["error"] != "" or outer["tag"] != 48
+        return out
+    end
+    let pos = outer["header_len"]
+    let tbs = tlv_at(der, pos)
+    if tbs["error"] != ""
+        return out
+    end
+    pos += tbs["total_len"]
+    let alg = tlv_at(der, pos)
+    if alg["error"] != "" or alg["tag"] != 48
+        return out
+    end
+    let apos = pos + alg["header_len"]
+    let oid = tlv_at(der, apos)
+    if oid["error"] != "" or oid["tag"] != 6
+        return out
+    end
+    if apos + oid["total_len"] > len(der)
+        return out
+    end
+    return chain_slice(der, apos + oid["header_len"], oid["length"])
+end
+
+## Extracts the outer signatureValue bytes of a certificate.
+##
+## Skips the BIT STRING leading unused-bits byte.
+##
+## ### Parameters
+## - `der`: DER certificate byte array.
+##
+## ### Returns
+## Signature byte array (empty on malformed input).
+pub function cert_sig_bytes(der) -> array
+    let out = []
+    if der is null or len(der) == 0
+        return out
+    end
+    let outer = tlv_at(der, 0)
+    if outer["error"] != "" or outer["tag"] != 48
+        return out
+    end
+    let pos = outer["header_len"]
+    let tbs = tlv_at(der, pos)
+    if tbs["error"] != ""
+        return out
+    end
+    pos += tbs["total_len"]
+    let alg = tlv_at(der, pos)
+    if alg["error"] != ""
+        return out
+    end
+    pos += alg["total_len"]
+    let sig = tlv_at(der, pos)
+    if sig["error"] != "" or sig["tag"] != 3 or sig["length"] < 1
+        return out
+    end
+    let start = pos + sig["header_len"]
+    if start + sig["length"] > len(der) or der[start] != 0
+        return out
+    end
+    return chain_slice(der, start + 1, sig["length"] - 1)
+end
+
+## Extracts the subjectPublicKeyInfo bytes of a certificate.
+##
+## Walks TBSCertificate children (optional version, serial, signature,
+## issuer, validity, subject) to the public-key sequence.
+##
+## ### Parameters
+## - `der`: DER certificate byte array.
+##
+## ### Returns
+## SPKI byte array (empty on malformed input).
+pub function cert_spki_bytes(der) -> array
+    let out = []
+    let tbs = cert_tbs_bytes(der)
+    if len(tbs) == 0
+        return out
+    end
+    let inner = tlv_at(tbs, 0)
+    if inner["error"] != ""
+        return out
+    end
+    let pos = inner["header_len"]
+    let first = tlv_at(tbs, pos)
+    if first["error"] != ""
+        return out
+    end
+    if first["tag"] == 160
+        pos += first["total_len"]
+    end
+    let skips = 0
+    while skips < 5
+        let t = tlv_at(tbs, pos)
+        if t["error"] != ""
+            return out
+        end
+        pos += t["total_len"]
+        skips += 1
+    end
+    let spki = tlv_at(tbs, pos)
+    if spki["error"] != "" or spki["tag"] != 48
+        return out
+    end
+    if pos + spki["total_len"] > len(tbs)
+        return out
+    end
+    return chain_slice(tbs, pos, spki["total_len"])
+end
+
+## Returns 1 when an OID body is sha256WithRSAEncryption.
+pub function oid_is_rsa_sha256(oid) -> int
+    if oid is null or len(oid) != 9
+        return 0
+    end
+    let want = [42, 134, 72, 134, 247, 13, 1, 1, 11]
+    let i = 0
+    while i < 9
+        if oid[i] != want[i]
+            return 0
+        end
+        i += 1
+    end
+    return 1
+end
+
+## Returns 1 when an OID body is ecdsa-with-SHA256.
+pub function oid_is_ecdsa_sha256(oid) -> int
+    if oid is null or len(oid) != 8
+        return 0
+    end
+    let want = [42, 134, 72, 206, 61, 4, 3, 2]
+    let i = 0
+    while i < 8
+        if oid[i] != want[i]
+            return 0
+        end
+        i += 1
+    end
+    return 1
+end
+
 # Copies `n` bytes starting at `offset` from a byte array.
 function chain_slice(data, offset: int, n: int) -> array
     let part = []

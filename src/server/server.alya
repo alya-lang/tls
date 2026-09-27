@@ -16,7 +16,9 @@ import "../core/record.alya"
 import "../core/handshake.alya"
 import "../core/keys.alya"
 import "../core/protect.alya"
+import "../core/ecdhe.alya"
 import "../cert/pem.alya"
+import "../cert/x509.alya"
 import "../cert/verify.alya"
 import "../io/raw.alya"
 import "../client/client.alya"
@@ -62,10 +64,10 @@ end
 
 ## Creates a new TLS server listener.
 ##
-## The default cipher allowlist is RSA-only: this package terminates RSA
-## key exchange today, so advertising ECDHE suites would negotiate a
-## handshake it cannot finish. Override with `tls_server_set_ciphers`
-## once P-256 support lands.
+## The default cipher allowlist prefers ECDHE with RSA certificates and
+## falls back to plain RSA key exchange. Override with
+## `tls_server_set_ciphers` (e.g. ECDHE-ECDSA suites for EC certificates)
+## once broader negotiation is needed.
 ##
 ## ### Parameters
 ## - `port`: Local port. Defaults to `8443`.
@@ -86,7 +88,7 @@ pub function tls_server_new(port: int = 8443, host: string = "0.0.0.0") -> TlsSe
         cert_pem: "",
         key_pem: "",
         require_client_cert: 0,
-        cipher_allowlist: [SUITE_RSA_AES128_GCM_SHA256],
+        cipher_allowlist: [SUITE_ECDHE_RSA_AES128_GCM_SHA256, SUITE_RSA_AES128_GCM_SHA256],
         alpn: ["h2", "http/1.1"]
     }
 end
@@ -473,10 +475,19 @@ pub function tls_accept_handshake(server: TlsServer, timeout_ms: int = 5000)
         ctx.sock = -1
         return ctx.fail(nego["error"])
     end
-    if nego["suite"] != SUITE_RSA_AES128_GCM_SHA256
+    let kex_rsa = 0
+    let kex_ecdhe_rsa = 0
+    let kex_ecdhe_ecdsa = 0
+    if nego["suite"] == SUITE_RSA_AES128_GCM_SHA256
+        kex_rsa = 1
+    elif suite_is_ecdhe_rsa(nego["suite"]) == 1
+        kex_ecdhe_rsa = 1
+    elif suite_is_ecdsa(nego["suite"]) == 1
+        kex_ecdhe_ecdsa = 1
+    else
         net::tcp_close(sock)
         ctx.sock = -1
-        return ctx.fail("only RSA key exchange supported in v1")
+        return ctx.fail("cipher suite not terminated here")
     end
     let transcript = []
     transcript = tls_transcript_append(transcript, TlsHandshakeType.ClientHello, hello_msg["body"])
@@ -512,6 +523,108 @@ pub function tls_accept_handshake(server: TlsServer, timeout_ms: int = 5000)
         return ctx.fail("failed to send Certificate")
     end
     transcript = tls_transcript_append(transcript, TlsHandshakeType.Certificate, cert_body)
+    let leaf_der = ders[0]
+    let cert_is_rsa = 0
+    let cert_is_ec = 0
+    let rsa_probe = crypto::rsa_parse_pubkey(leaf_der)
+    if rsa_probe["error"] == ""
+        cert_is_rsa = 1
+    else
+        let leaf_spki = cert_spki_bytes(leaf_der)
+        if len(leaf_spki) > 0
+            let ec_probe = crypto::ec_parse_spki_pubkey(leaf_spki)
+            if ec_probe["error"] == ""
+                cert_is_ec = 1
+            end
+        end
+    end
+    if kex_rsa == 1 and cert_is_rsa == 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("RSA suite needs an RSA server certificate")
+    end
+    if kex_ecdhe_rsa == 1 and cert_is_rsa == 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("ECDHE-RSA suite needs an RSA server certificate")
+    end
+    if kex_ecdhe_ecdsa == 1 and cert_is_ec == 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("ECDHE-ECDSA suite needs an EC server certificate")
+    end
+    let eph_priv = []
+    if kex_ecdhe_rsa == 1 or kex_ecdhe_ecdsa == 1
+        let eph = crypto::p256_keygen()
+        if len(eph["pub"]) != 65
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("ephemeral key generation failed")
+        end
+        eph_priv = eph["priv"]
+        let params = ecdhe_server_params(eph["pub"])
+        if len(params) == 0
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("failed to encode ServerKeyExchange params")
+        end
+        let signed_input = ecdhe_sign_input(hello["random"], srv_random, params)
+        let ske_body = []
+        if kex_ecdhe_rsa == 1
+            let rsakey = crypto::rsa_parse_private_key(pem_to_der(server.key_pem, "PRIVATE KEY"))
+            if rsakey["error"] != ""
+                net::tcp_close(sock)
+                ctx.sock = -1
+                return ctx.fail("server private key unparseable")
+            end
+            let rsig = crypto::rsa_sign_pkcs1v15(rsakey, "sha256", signed_input)
+            if rsig["error"] != ""
+                net::tcp_close(sock)
+                ctx.sock = -1
+                return ctx.fail("ServerKeyExchange signing failed")
+            end
+            ske_body = ecdhe_build_ske_body(params, ECDHE_HASH_SHA256, ECDHE_SIG_RSA, rsig["signature"])
+        else
+            let ecpriv = crypto::ec_parse_pkcs8_priv(pem_to_der(server.key_pem, "PRIVATE KEY"))
+            if ecpriv["error"] != ""
+                ecpriv = crypto::ec_parse_sec1_priv(pem_to_der(server.key_pem, "EC PRIVATE KEY"))
+            end
+            if ecpriv["error"] != ""
+                net::tcp_close(sock)
+                ctx.sock = -1
+                return ctx.fail("server private key unparseable")
+            end
+            let esig = crypto::ecdsa_sign_hash(ecpriv["priv"], crypto::sha256_bytes(signed_input))
+            if esig["error"] != ""
+                net::tcp_close(sock)
+                ctx.sock = -1
+                return ctx.fail("ServerKeyExchange signing failed")
+            end
+            ske_body = ecdhe_build_ske_body(params, ECDHE_HASH_SHA256, ECDHE_SIG_ECDSA, esig["der"])
+        end
+        if len(ske_body) == 0
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("failed to build ServerKeyExchange")
+        end
+        let ske_msg = [TlsHandshakeType.ServerKeyExchange, 0, 0, 0]
+        let sklen = len(ske_body)
+        ske_msg[1] = bit_and(bit_shr(sklen, 16), 255)
+        ske_msg[2] = bit_and(bit_shr(sklen, 8), 255)
+        ske_msg[3] = bit_and(sklen, 255)
+        let sk = 0
+        while sk < len(ske_body)
+            ske_msg.push(ske_body[sk])
+            sk += 1
+        end
+        let ske_rec = record_encode(TlsContentType.Handshake, TlsVersion.Tls12, ske_msg)
+        if raw_send(sock, ske_rec["bytes"]) < 0
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("failed to send ServerKeyExchange")
+        end
+        transcript = tls_transcript_append(transcript, TlsHandshakeType.ServerKeyExchange, ske_body)
+    end
     let shd = [TlsHandshakeType.ServerHelloDone, 0, 0, 0]
     let shd_rec = record_encode(TlsContentType.Handshake, TlsVersion.Tls12, shd)
     if raw_send(sock, shd_rec["bytes"]) < 0
@@ -545,41 +658,63 @@ pub function tls_accept_handshake(server: TlsServer, timeout_ms: int = 5000)
     end
     transcript = tls_transcript_append(transcript, TlsHandshakeType.ClientKeyExchange, cke_msg["body"])
     let cke = cke_msg["body"]
-    if len(cke) < 2
-        net::tcp_close(sock)
-        ctx.sock = -1
-        return ctx.fail("malformed ClientKeyExchange")
-    end
-    let ek_len = cke[0] * 256 + cke[1]
-    if ek_len <= 0 or 2 + ek_len > len(cke)
-        net::tcp_close(sock)
-        ctx.sock = -1
-        return ctx.fail("malformed ClientKeyExchange")
-    end
-    let enc = []
-    let e = 0
-    while e < ek_len
-        enc.push(cke[2 + e])
-        e += 1
-    end
-    let key_der = pem_to_der(server.key_pem, "PRIVATE KEY")
-    let priv = crypto::rsa_parse_private_key(key_der)
-    if priv["error"] != ""
-        net::tcp_close(sock)
-        ctx.sock = -1
-        return ctx.fail("server private key unparseable")
-    end
-    let opened = crypto::rsa_decrypt_crt_bytes(priv, enc)
-    if opened["error"] != ""
-        net::tcp_close(sock)
-        ctx.sock = -1
-        return ctx.fail("premaster decryption failed")
-    end
-    let pre = opened["plaintext"]
-    if len(pre) != 48 or pre[0] != 3
-        net::tcp_close(sock)
-        ctx.sock = -1
-        return ctx.fail("premaster version mismatch")
+    let pre = []
+    if kex_rsa == 1
+        if len(cke) < 2
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("malformed ClientKeyExchange")
+        end
+        let ek_len = cke[0] * 256 + cke[1]
+        if ek_len <= 0 or 2 + ek_len > len(cke)
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("malformed ClientKeyExchange")
+        end
+        let enc = []
+        let e = 0
+        while e < ek_len
+            enc.push(cke[2 + e])
+            e += 1
+        end
+        let key_der = pem_to_der(server.key_pem, "PRIVATE KEY")
+        let priv = crypto::rsa_parse_private_key(key_der)
+        if priv["error"] != ""
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("server private key unparseable")
+        end
+        let opened = crypto::rsa_decrypt_crt_bytes(priv, enc)
+        if opened["error"] != ""
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("premaster decryption failed")
+        end
+        pre = opened["plaintext"]
+        if len(pre) != 48 or pre[0] != 3
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("premaster version mismatch")
+        end
+    else
+        let cke_parsed = ecdhe_parse_cke(cke)
+        if cke_parsed["error"] != ""
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("malformed ClientKeyExchange")
+        end
+        if cke_parsed["curve"] != ECDHE_CURVE_P256
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("ClientKeyExchange curve mismatch")
+        end
+        let agreed = crypto::p256_ecdh(eph_priv, cke_parsed["pub"])
+        if agreed["error"] != ""
+            net::tcp_close(sock)
+            ctx.sock = -1
+            return ctx.fail("ECDH agreement failed")
+        end
+        pre = agreed["secret"]
     end
     let cli_rand = hello["random"]
     let master = master_secret(pre, cli_rand, srv_random)
