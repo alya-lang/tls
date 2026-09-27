@@ -117,6 +117,10 @@ pub function tls_handshake_complete(ctx: TlsContext) -> TlsContext
     if leaf is null or len(leaf) == 0
         return ctx.fail("no server certificate captured")
     end
+    tls_check_stapled_ocsp(ctx)
+    if ctx.last_error != ""
+        return ctx
+    end
     let pubkey = crypto::rsa_parse_pubkey(leaf)
     if pubkey["error"] != ""
         return ctx.fail("server RSA key unparseable: " + pubkey["error"])
@@ -240,6 +244,10 @@ pub function tls_handshake_complete_ecdhe(ctx: TlsContext) -> TlsContext
     let leaf = ctx.keys["leaf_der"]
     if leaf is null or len(leaf) == 0
         return ctx.fail("no server certificate captured")
+    end
+    tls_check_stapled_ocsp(ctx)
+    if ctx.last_error != ""
+        return ctx
     end
     let cli_rand = ctx.keys["client_random"]
     let srv_rand = ctx.keys["server_random"]

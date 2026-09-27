@@ -77,7 +77,7 @@ tls/
 ```
 
 > [!NOTE]
-> **Scope:** live handshakes negotiate versions/suites over binary-safe I/O, read and verify the peer chain automatically (`Required` fails closed, RSA signatures checked, CRL serials queryable), seal resumption tickets, and shut down with `close_notify`. Remaining: server-side ECDHE key exchange (needs P-256/ECDSA primitives), ECDSA chain validation, OCSP (needs network responder), and ticket-key rotation policy.
+> **Scope:** live handshakes negotiate versions/suites over binary-safe I/O (TLS 1.2: RSA plus ECDHE with P-256/X25519, RSA/ECDSA certificates served and verified), read and verify the peer chain automatically (`Required` fails closed, CRL serials queryable), validate stapled OCSP responses (`good` + signature verified, fail-closed), seal resumption tickets, and shut down with `close_notify`. Remaining: RSA-PSS signatures, P-384 curves, OCSP fetching over HTTP (caller-side), and ticket-key rotation policy.
 >
 > [!NOTE]
 > **String limitation:** Alya strings cannot hold NUL bytes, so `bytes_to_wire`/`wire_to_bytes` are text-safe-only helpers. All record transport uses byte arrays with `io/raw.alya` (`raw_send`/`raw_recv`).
@@ -198,7 +198,7 @@ main()
 | `tls_alert_bytes(level, desc, ver)` | `int, int, int` | 7-byte alert record for `raw_send` |
 | `build_client_hello(cfg, suites)` | `cfg, array` | ClientHello with SNI/ALPN (binary bytes) |
 | `parse_server_hello(body)` | `body: array` | Extracts version/random/suite |
-| `build_server_hello(ver, suite, rnd, sid)` | `int, int, array, str` | ServerHello answering a ClientHello |
+| `build_server_hello(ver, suite, rnd, sid, staple)` | `int, int, array, str, int` | ServerHello answering a ClientHello (`staple` echoes status_request) |
 | `alpn_select(server, client)` | `array, array` | First overlapping protocol |
 | `master_secret(pre, cli, srv)` | `array, array, array` | 48-byte TLS 1.2 master secret |
 | `key_block(master, srv, cli, len)` | `array, array, array, int` | Key expansion material |

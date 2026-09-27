@@ -295,7 +295,10 @@ pub function normalize_time_stamp(raw: string) -> string
     return ""
 end
 
-## Reads the serial INTEGER near the start of TBSCertificate.
+## Reads the serial INTEGER of TBSCertificate.
+##
+## Navigates outer SEQ, TBSCertificate SEQ, and the optional explicit
+## version so the version number is never mistaken for the serial.
 ##
 ## ### Parameters
 ## - `der`: DER byte array.
@@ -306,6 +309,30 @@ pub function parse_serial_hex(der) -> string
     if der is null or len(der) < 12
         return ""
     end
+    let hex = "0123456789abcdef"
+    let outer = tlv_at(der, 0)
+    if outer["error"] == "" and outer["tag"] == 48
+        let pos = outer["header_len"]
+        let tbs = tlv_at(der, pos)
+        if tbs["error"] == "" and tbs["tag"] == 48
+            pos += tbs["header_len"]
+            let first = tlv_at(der, pos)
+            if first["error"] == "" and first["tag"] == 160
+                pos += first["total_len"]
+            end
+            let sn = tlv_at(der, pos)
+            if sn["error"] == "" and sn["tag"] == 2 and sn["length"] >= 1 and sn["length"] <= 20 and pos + sn["total_len"] <= len(der)
+                let out = ""
+                let k = 0
+                while k < sn["length"]
+                    let b = der[pos + sn["header_len"] + k]
+                    out = out + char_at(hex, bit_and(bit_shr(b, 4), 15)) + char_at(hex, bit_and(b, 15))
+                    k += 1
+                end
+                return out
+            end
+        end
+    end
     let limit = len(der)
     if limit > 64
         limit = 64
@@ -315,7 +342,6 @@ pub function parse_serial_hex(der) -> string
         if der[i] == 2
             let t = tlv_at(der, i)
             if t["error"] == "" and t["length"] >= 1 and t["length"] <= 20 and i + t["total_len"] <= len(der)
-                let hex = "0123456789abcdef"
                 let out = ""
                 let k = 0
                 while k < t["length"]
@@ -605,6 +631,90 @@ pub function oid_is_ecdsa_sha256(oid) -> int
         i += 1
     end
     return 1
+end
+
+## Extracts the issuer Name bytes of a certificate.
+##
+## Walks TBSCertificate children (optional version, serial, signature)
+## to the issuer Name sequence.
+##
+## ### Parameters
+## - `der`: DER certificate byte array.
+##
+## ### Returns
+## Issuer Name TLV bytes (empty on malformed input).
+pub function cert_issuer_name_der(der) -> array
+    let out = []
+    let tbs = cert_tbs_bytes(der)
+    if len(tbs) == 0
+        return out
+    end
+    let inner = tlv_at(tbs, 0)
+    if inner["error"] != ""
+        return out
+    end
+    let pos = inner["header_len"]
+    let first = tlv_at(tbs, pos)
+    if first["error"] != ""
+        return out
+    end
+    if first["tag"] == 160
+        pos += first["total_len"]
+    end
+    let skips = 0
+    while skips < 2
+        let t = tlv_at(tbs, pos)
+        if t["error"] != ""
+            return out
+        end
+        pos += t["total_len"]
+        skips += 1
+    end
+    let name = tlv_at(tbs, pos)
+    if name["error"] != "" or name["tag"] != 48
+        return out
+    end
+    if pos + name["total_len"] > len(tbs)
+        return out
+    end
+    return chain_slice(tbs, pos, name["total_len"])
+end
+
+## Extracts the issuer public-key BIT STRING content of a certificate.
+##
+## Returns the raw key bytes (without tag, length, or unused-bits byte)
+## used for OCSP issuerKeyHash computation.
+##
+## ### Parameters
+## - `der`: DER certificate byte array.
+##
+## ### Returns
+## Key byte array (empty on malformed input).
+pub function cert_issuer_key_bytes(der) -> array
+    let out = []
+    let spki = cert_spki_bytes(der)
+    if len(spki) == 0
+        return out
+    end
+    let outer = tlv_at(spki, 0)
+    if outer["error"] != ""
+        return out
+    end
+    let pos = outer["header_len"]
+    let alg = tlv_at(spki, pos)
+    if alg["error"] != ""
+        return out
+    end
+    pos += alg["total_len"]
+    let bits = tlv_at(spki, pos)
+    if bits["error"] != "" or bits["tag"] != 3 or bits["length"] < 1
+        return out
+    end
+    let start = pos + bits["header_len"]
+    if start + bits["length"] > len(spki) or spki[start] != 0
+        return out
+    end
+    return chain_slice(spki, start + 1, bits["length"] - 1)
 end
 
 # Copies `n` bytes starting at `offset` from a byte array.

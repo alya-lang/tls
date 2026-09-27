@@ -19,6 +19,7 @@ import "../core/protect.alya"
 import "../core/ecdhe.alya"
 import "../cert/pem.alya"
 import "../cert/x509.alya"
+import "../cert/ocsp.alya"
 import "../cert/verify.alya"
 import "../io/raw.alya"
 import "../client/client.alya"
@@ -59,7 +60,8 @@ pub struct TlsServer
     key_pem: string,
     require_client_cert: int,
     cipher_allowlist: array,
-    alpn: array
+    alpn: array,
+    ocsp_response: array
 end
 
 ## Creates a new TLS server listener.
@@ -89,7 +91,8 @@ pub function tls_server_new(port: int = 8443, host: string = "0.0.0.0") -> TlsSe
         key_pem: "",
         require_client_cert: 0,
         cipher_allowlist: [SUITE_ECDHE_RSA_AES128_GCM_SHA256, SUITE_RSA_AES128_GCM_SHA256],
-        alpn: ["h2", "http/1.1"]
+        alpn: ["h2", "http/1.1"],
+        ocsp_response: []
     }
 end
 
@@ -247,6 +250,26 @@ pub function tls_server_set_alpn(server: TlsServer, protocols) -> TlsServer
         server.alpn = []
     else
         server.alpn = protocols
+    end
+    return server
+end
+
+## Attaches a stapled OCSP response served on client request.
+##
+## When the client sends `status_request` and a response is configured,
+## the handshake flights CertificateStatus after Certificate.
+##
+## ### Parameters
+## - `server`: Target `TlsServer` handle (mutated in place).
+## - `resp_der`: DER OCSPResponse bytes (empty clears stapling).
+##
+## ### Returns
+## The same server for chaining.
+pub function tls_server_enable_ocsp(server: TlsServer, resp_der) -> TlsServer
+    if resp_der is null or len(resp_der) == 0
+        server.ocsp_response = []
+    else
+        server.ocsp_response = resp_der
     end
     return server
 end
@@ -491,8 +514,12 @@ pub function tls_accept_handshake(server: TlsServer, timeout_ms: int = 5000)
     end
     let transcript = []
     transcript = tls_transcript_append(transcript, TlsHandshakeType.ClientHello, hello_msg["body"])
+    let send_stapled = 0
+    if hello["ocsp"] == 1 and len(server.ocsp_response) > 0
+        send_stapled = 1
+    end
     let srv_random = crypto::random_bytes(32)
-    let sh = build_server_hello(TlsVersion.Tls12, nego["suite"], srv_random, "")
+    let sh = build_server_hello(TlsVersion.Tls12, nego["suite"], srv_random, "", send_stapled)
     if raw_send(sock, sh["bytes"]) < 0
         net::tcp_close(sock)
         ctx.sock = -1
@@ -523,6 +550,30 @@ pub function tls_accept_handshake(server: TlsServer, timeout_ms: int = 5000)
         return ctx.fail("failed to send Certificate")
     end
     transcript = tls_transcript_append(transcript, TlsHandshakeType.Certificate, cert_body)
+    if send_stapled == 1
+        let cs_body = cert_status_build_body(server.ocsp_response)
+        if len(cs_body) > 0
+            let cs_msg = [TlsHandshakeType.CertificateStatus, 0, 0, 0]
+            let cslen = len(cs_body)
+            cs_msg[1] = bit_and(bit_shr(cslen, 16), 255)
+            cs_msg[2] = bit_and(bit_shr(cslen, 8), 255)
+            cs_msg[3] = bit_and(cslen, 255)
+            let csb = 0
+            while csb < len(cs_body)
+                cs_msg.push(cs_body[csb])
+                csb += 1
+            end
+            let cs_rec = record_encode(TlsContentType.Handshake, TlsVersion.Tls12, cs_msg)
+            if raw_send(sock, cs_rec["bytes"]) < 0
+                net::tcp_close(sock)
+                ctx.sock = -1
+                return ctx.fail("failed to send CertificateStatus")
+            end
+            transcript = tls_transcript_append(transcript, TlsHandshakeType.CertificateStatus, cs_body)
+        else
+            send_stapled = 0
+        end
+    end
     let leaf_der = ders[0]
     let cert_is_rsa = 0
     let cert_is_ec = 0

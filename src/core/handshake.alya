@@ -109,6 +109,17 @@ pub function alpn_extension(protocols) -> array
     return ext
 end
 
+## Builds the status_request extension for OCSP stapling (RFC 6066).
+##
+## Requests a stapled OCSP response with an empty responder list:
+## `status_type(ocsp) + responder_id_list_len(0) + request_ext_len(0)`.
+##
+## ### Returns
+## Extension byte array (type `0x0005`).
+pub function status_request_extension() -> array
+    return [0, 5, 0, 5, 1, 0, 0, 0, 0]
+end
+
 ## Builds the signature_algorithms extension (RFC 8446 section 4.2.3).
 ##
 ## Offers only schemes this package verifies: ECDSA secp256r1 + RSA
@@ -227,6 +238,12 @@ pub function build_client_hello(config, suites = null) -> map
     while g < len(groups)
         exts.push(groups[g])
         g += 1
+    end
+    let ocsp_req = status_request_extension()
+    let o = 0
+    while o < len(ocsp_req)
+        exts.push(ocsp_req[o])
+        o += 1
     end
     let ext_len = u16_to_bytes(len(exts))
     body.push(ext_len[0])
@@ -435,33 +452,33 @@ end
 ## Map with `version`, `random`, `session_id`, `suites`, `sni`, `alpn`,
 ## and `error` fields.
 pub function parse_client_hello(body) -> map
-    let fail = { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "error": "empty body" }
+    let fail = { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "ocsp": 0, "error": "empty body" }
     if body is null or len(body) < 38
         return fail
     end
     let ver = body[0] * 256 + body[1]
     if version_is_supported(ver) == 0
-        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "error": "unsupported client version" }
+        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "ocsp": 0, "error": "unsupported client version" }
     end
     let rnd = slice_bytes(body, 2, 32)
     let pos = 34
     if pos >= len(body)
-        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "error": "truncated session id" }
+        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "ocsp": 0, "error": "truncated session id" }
     end
     let sid_len = body[pos]
     pos += 1
     if pos + sid_len > len(body)
-        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "error": "truncated session id" }
+        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "ocsp": 0, "error": "truncated session id" }
     end
     let sid = crypto::bytes_to_hex(slice_bytes(body, pos, sid_len))
     pos += sid_len
     if pos + 2 > len(body)
-        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "error": "truncated suites" }
+        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "ocsp": 0, "error": "truncated suites" }
     end
     let suite_len = body[pos] * 256 + body[pos + 1]
     pos += 2
     if pos + suite_len > len(body) or suite_len % 2 != 0
-        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "error": "truncated suites" }
+        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "ocsp": 0, "error": "truncated suites" }
     end
     let suites = []
     let s = 0
@@ -471,16 +488,16 @@ pub function parse_client_hello(body) -> map
     end
     pos += suite_len
     if pos >= len(body)
-        return { "version": ver, "random": rnd, "session_id": sid, "suites": suites, "sni": "", "alpn": [], "error": "" }
+        return { "version": ver, "random": rnd, "session_id": sid, "suites": suites, "sni": "", "alpn": [], "ocsp": 0, "error": "" }
     end
     let comp_len = body[pos]
     pos += 1
     if pos + comp_len > len(body)
-        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "error": "truncated compression" }
+        return { "version": 0, "random": [], "session_id": "", "suites": [], "sni": "", "alpn": [], "ocsp": 0, "error": "truncated compression" }
     end
     pos += comp_len
     if pos + 2 > len(body)
-        return { "version": ver, "random": rnd, "session_id": sid, "suites": suites, "sni": "", "alpn": [], "error": "" }
+        return { "version": ver, "random": rnd, "session_id": sid, "suites": suites, "sni": "", "alpn": [], "ocsp": 0, "error": "" }
     end
     let ext_total = body[pos] * 256 + body[pos + 1]
     pos += 2
@@ -490,6 +507,7 @@ pub function parse_client_hello(body) -> map
     end
     let sni = ""
     let alpn = []
+    let ocsp = 0
     while pos + 4 <= end_pos
         let etype = body[pos] * 256 + body[pos + 1]
         let elen = body[pos + 2] * 256 + body[pos + 3]
@@ -535,9 +553,12 @@ pub function parse_client_hello(body) -> map
                 end
             end
         end
+        if etype == 5 and elen >= 1 and body[pos] == 1
+            ocsp = 1
+        end
         pos += elen
     end
-    return { "version": ver, "random": rnd, "session_id": sid, "suites": suites, "sni": sni, "alpn": alpn, "error": "" }
+    return { "version": ver, "random": rnd, "session_id": sid, "suites": suites, "sni": sni, "alpn": alpn, "ocsp": ocsp, "error": "" }
 end
 
 ## Builds a Certificate handshake message body from DER certificates.
@@ -589,11 +610,12 @@ end
 ## - `cipher_suite`: Selected cipher suite id.
 ## - `random`: 32-byte server random (null generates a fresh one).
 ## - `session_id_hex`: Session id as hex string (empty means no session).
+## - `staple_ocsp`: `1` echoes an empty status_request extension.
 ##
 ## ### Returns
 ## Map with `version`, `cipher_suite`, `random`, `session_id`, `body`,
 ## `bytes`, and `wire` fields.
-pub function build_server_hello(version: int, cipher_suite: int, random = null, session_id_hex: string = "") -> map
+pub function build_server_hello(version: int, cipher_suite: int, random = null, session_id_hex: string = "", staple_ocsp: int = 0) -> map
     let ver = version
     if version_is_supported(ver) == 0
         ver = TlsVersion.Tls12
@@ -627,6 +649,12 @@ pub function build_server_hello(version: int, cipher_suite: int, random = null, 
     body.push(suite_bytes[1])
     body.push(0)
     let ri_ext = [255, 1, 0, 1, 0]
+    if staple_ocsp == 1
+        ri_ext.push(0)
+        ri_ext.push(5)
+        ri_ext.push(0)
+        ri_ext.push(0)
+    end
     let ext_total = u16_to_bytes(len(ri_ext))
     body.push(ext_total[0])
     body.push(ext_total[1])

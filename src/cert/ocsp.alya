@@ -1,0 +1,426 @@
+## OCSP response parsing and validation (RFC 6960, SHA-1 CertID).
+##
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
+## Parses BasicOCSPResponse structures, matches the CertID against a leaf
+## plus issuer pair, verifies the response signature with the issuer key
+## (RSA or secp256r1), and reports revocation status. Fetching responses
+## over HTTP stays with the caller; stapled responses ride the handshake.
+
+import "crypto" as crypto
+import "../types.alya"
+import "./x509.alya"
+import "./pem.alya"
+
+## OID body for id-pkix-ocsp-basic (1.3.6.1.5.5.7.48.1.1).
+function _ocsp_basic_oid() -> array
+    return [43, 6, 1, 5, 5, 7, 48, 1, 1]
+end
+
+## OID body for SHA-1 (1.3.14.3.2.26).
+function _ocsp_sha1_oid() -> array
+    return [43, 14, 3, 2, 26]
+end
+
+## Compares two byte arrays for equality.
+function _ocsp_bytes_eq(a, b) -> int
+    if a is null or b is null or len(a) != len(b)
+        return 0
+    end
+    let i = 0
+    while i < len(a)
+        if a[i] != b[i]
+            return 0
+        end
+        i += 1
+    end
+    return 1
+end
+
+## Copies a byte window from an array.
+function _ocsp_slice(data, offset: int, n: int) -> array
+    let part = []
+    if data is null or n <= 0
+        return part
+    end
+    let i = 0
+    while i < n and offset + i < len(data)
+        part.push(data[offset + i])
+        i += 1
+    end
+    return part
+end
+
+## Reads a GeneralizedTime/UTCTime stamp at a TLV offset.
+function _ocsp_time_at(data, pos: int) -> map
+    let fail = { "stamp": "", "next": pos, "error": "bad time" }
+    let t = tlv_at(data, pos)
+    if t["error"] != "" or (t["tag"] != 24 and t["tag"] != 23)
+        return fail
+    end
+    let start = pos + t["header_len"]
+    if start + t["length"] > len(data)
+        return fail
+    end
+    let raw = ""
+    let i = 0
+    while i < t["length"]
+        raw = raw + chr(data[start + i])
+        i += 1
+    end
+    let norm = normalize_time_stamp(raw)
+    if norm == ""
+        return fail
+    end
+    return { "stamp": norm, "next": start + t["length"], "error": "" }
+end
+
+## Parses one SingleResponse body (without outer SEQ header).
+function _ocsp_parse_single(body) -> map
+    let fail = { "name_hash": [], "key_hash": [], "serial": [], "cert_status": "", "this_update": "", "next_update": "", "error": "malformed SingleResponse" }
+    if body is null or len(body) == 0
+        return fail
+    end
+    let cid = tlv_at(body, 0)
+    if cid["error"] != "" or cid["tag"] != 48
+        return fail
+    end
+    let cpos = cid["header_len"]
+    let halg = tlv_at(body, cpos)
+    if halg["error"] != "" or halg["tag"] != 48
+        return fail
+    end
+    let hpos = cpos + halg["header_len"]
+    let hoid = tlv_at(body, hpos)
+    if hoid["error"] != "" or hoid["tag"] != 6
+        return fail
+    end
+    let hash_oid = _ocsp_slice(body, hpos + hoid["header_len"], hoid["length"])
+    cpos += halg["total_len"]
+    let nh = tlv_at(body, cpos)
+    if nh["error"] != "" or nh["tag"] != 4
+        return fail
+    end
+    let name_hash = _ocsp_slice(body, cpos + nh["header_len"], nh["length"])
+    cpos += nh["total_len"]
+    let kh = tlv_at(body, cpos)
+    if kh["error"] != "" or kh["tag"] != 4
+        return fail
+    end
+    let key_hash = _ocsp_slice(body, cpos + kh["header_len"], kh["length"])
+    cpos += kh["total_len"]
+    let sn = tlv_at(body, cpos)
+    if sn["error"] != "" or sn["tag"] != 2
+        return fail
+    end
+    let serial = _ocsp_slice(body, cpos + sn["header_len"], sn["length"])
+    let pos = cid["header_len"] + cid["length"]
+    let st = tlv_at(body, pos)
+    if st["error"] != ""
+        return fail
+    end
+    let cert_status = ""
+    if st["tag"] == 128
+        cert_status = "good"
+    elif st["tag"] == 161
+        cert_status = "revoked"
+    elif st["tag"] == 162
+        cert_status = "unknown"
+    else
+        return fail
+    end
+    pos += st["total_len"]
+    let tu = _ocsp_time_at(body, pos)
+    if tu["error"] != ""
+        return fail
+    end
+    pos = tu["next"]
+    let next_update = ""
+    if pos < len(body)
+        let nx = tlv_at(body, pos)
+        if nx["error"] == "" and nx["tag"] == 160
+            let nt = _ocsp_time_at(body, pos + nx["header_len"])
+            if nt["error"] == ""
+                next_update = nt["stamp"]
+            end
+        end
+    end
+    return { "name_hash": name_hash, "key_hash": key_hash, "serial": serial, "hash_oid": hash_oid, "cert_status": cert_status, "this_update": tu["stamp"], "next_update": next_update, "error": "" }
+end
+
+## Parses a DER OCSPResponse into its BasicOCSPResponse parts.
+##
+## ### Returns
+## Map with `status`, `tbs`, `sig_alg_oid`, `sig`, `responder_tag`,
+## `responder_id`, `single`, and `error` fields.
+pub function ocsp_parse_response(der) -> map
+    let fail = { "status": -1, "tbs": [], "sig_alg_oid": [], "sig": [], "responder_tag": 0, "responder_id": [], "single": null, "error": "malformed OCSPResponse" }
+    if der is null or len(der) == 0
+        return fail
+    end
+    let outer = tlv_at(der, 0)
+    if outer["error"] != "" or outer["tag"] != 48
+        return fail
+    end
+    let pos = outer["header_len"]
+    let st = tlv_at(der, pos)
+    if st["error"] != "" or st["tag"] != 10
+        return fail
+    end
+    if pos + st["header_len"] >= len(der)
+        return fail
+    end
+    let status = der[pos + st["header_len"]]
+    pos += st["total_len"]
+    if status != 0
+        return { "status": status, "tbs": [], "sig_alg_oid": [], "sig": [], "responder_tag": 0, "responder_id": [], "single": null, "error": "" }
+    end
+    let rb = tlv_at(der, pos)
+    if rb["error"] != "" or rb["tag"] != 160
+        return fail
+    end
+    let rpos = pos + rb["header_len"]
+    let rseq = tlv_at(der, rpos)
+    if rseq["error"] != "" or rseq["tag"] != 48
+        return fail
+    end
+    rpos += rseq["header_len"]
+    let rtype = tlv_at(der, rpos)
+    if rtype["error"] != "" or rtype["tag"] != 6
+        return fail
+    end
+    let type_oid = _ocsp_slice(der, rpos + rtype["header_len"], rtype["length"])
+    if _ocsp_bytes_eq(type_oid, _ocsp_basic_oid()) == 0
+        return { "status": 0, "tbs": [], "sig_alg_oid": [], "sig": [], "responder_tag": 0, "responder_id": [], "single": null, "error": "not a BasicOCSPResponse" }
+    end
+    rpos += rtype["total_len"]
+    let roct = tlv_at(der, rpos)
+    if roct["error"] != "" or roct["tag"] != 4
+        return fail
+    end
+    let basic = _ocsp_slice(der, rpos + roct["header_len"], roct["length"])
+    let bseq = tlv_at(basic, 0)
+    if bseq["error"] != "" or bseq["tag"] != 48
+        return fail
+    end
+    let bpos = bseq["header_len"]
+    let tbs = tlv_at(basic, bpos)
+    if tbs["error"] != "" or tbs["tag"] != 48
+        return fail
+    end
+    let tbs_bytes = _ocsp_slice(basic, bpos, tbs["total_len"])
+    bpos += tbs["total_len"]
+    let salg = tlv_at(basic, bpos)
+    if salg["error"] != "" or salg["tag"] != 48
+        return fail
+    end
+    let sapos = bpos + salg["header_len"]
+    let said = tlv_at(basic, sapos)
+    if said["error"] != "" or said["tag"] != 6
+        return fail
+    end
+    let sig_alg_oid = _ocsp_slice(basic, sapos + said["header_len"], said["length"])
+    bpos += salg["total_len"]
+    let sbit = tlv_at(basic, bpos)
+    if sbit["error"] != "" or sbit["tag"] != 3 or sbit["length"] < 1
+        return fail
+    end
+    let sstart = bpos + sbit["header_len"]
+    if sstart + sbit["length"] > len(basic) or basic[sstart] != 0
+        return fail
+    end
+    let sig = _ocsp_slice(basic, sstart + 1, sbit["length"] - 1)
+    let tt = tlv_at(tbs_bytes, 0)
+    if tt["error"] != ""
+        return fail
+    end
+    let tpos = tt["header_len"]
+    let first = tlv_at(tbs_bytes, tpos)
+    if first["error"] != ""
+        return fail
+    end
+    if first["tag"] == 160
+        tpos += first["total_len"]
+        first = tlv_at(tbs_bytes, tpos)
+        if first["error"] != ""
+            return fail
+        end
+    end
+    let responder_tag = first["tag"]
+    let responder_id = _ocsp_slice(tbs_bytes, tpos + first["header_len"], first["length"])
+    if responder_tag == 162
+        let inner = tlv_at(responder_id, 0)
+        if inner["error"] == "" and inner["tag"] == 4 and inner["header_len"] + inner["length"] <= len(responder_id)
+            responder_id = _ocsp_slice(responder_id, inner["header_len"], inner["length"])
+        end
+    end
+    tpos += first["total_len"]
+    let produced = _ocsp_time_at(tbs_bytes, tpos)
+    if produced["error"] != ""
+        return fail
+    end
+    tpos = produced["next"]
+    let resps = tlv_at(tbs_bytes, tpos)
+    if resps["error"] != "" or resps["tag"] != 48
+        return fail
+    end
+    let single_outer = tlv_at(tbs_bytes, tpos + resps["header_len"])
+    if single_outer["error"] != "" or single_outer["tag"] != 48
+        return fail
+    end
+    let single_body = _ocsp_slice(tbs_bytes, tpos + resps["header_len"] + single_outer["header_len"], single_outer["length"])
+    let single = _ocsp_parse_single(single_body)
+    if single["error"] != ""
+        return { "status": 0, "tbs": tbs_bytes, "sig_alg_oid": sig_alg_oid, "sig": sig, "responder_tag": responder_tag, "responder_id": responder_id, "single": null, "error": single["error"] }
+    end
+    return { "status": 0, "tbs": tbs_bytes, "sig_alg_oid": sig_alg_oid, "sig": sig, "responder_tag": responder_tag, "responder_id": responder_id, "single": single, "error": "" }
+end
+
+## Normalizes a serial hex string (lowercase, no leading zero pairs).
+function _ocsp_norm_serial_hex(h: string) -> string
+    if h is null
+        return ""
+    end
+    let s = lower(h)
+    while len(s) > 2 and substring(s, 0, 2) == "00"
+        s = substring(s, 2, len(s) - 2)
+    end
+    return s
+end
+
+## Builds a CertificateStatus body wrapping a stapled OCSP response.
+##
+## Layout: status_type(ocsp=1) + 3-byte length + response bytes.
+##
+## ### Returns
+## Body bytes (without handshake header), or empty on bad input.
+pub function cert_status_build_body(resp_der) -> array
+    let out = []
+    if resp_der is null or len(resp_der) == 0
+        return out
+    end
+    out.push(1)
+    out.push(bit_and(bit_shr(len(resp_der), 16), 255))
+    out.push(bit_and(bit_shr(len(resp_der), 8), 255))
+    out.push(bit_and(len(resp_der), 255))
+    let i = 0
+    while i < len(resp_der)
+        out.push(resp_der[i])
+        i += 1
+    end
+    return out
+end
+
+## Parses a CertificateStatus body into the stapled OCSP response.
+##
+## ### Returns
+## Map with `resp` and `error` fields.
+pub function cert_status_parse_body(body) -> map
+    let fail = { "resp": [], "error": "malformed CertificateStatus" }
+    if body is null or len(body) < 4 or body[0] != 1
+        return fail
+    end
+    let rlen = body[1] * 65536 + body[2] * 256 + body[3]
+    if rlen <= 0 or 4 + rlen != len(body)
+        return fail
+    end
+    let resp = []
+    let i = 4
+    while i < len(body)
+        resp.push(body[i])
+        i += 1
+    end
+    return { "resp": resp, "error": "" }
+end
+
+## Validates an OCSP response against a leaf plus issuer pair.
+##
+## Checks transport status, response type, CertID match (SHA-1 issuer
+## hashes plus serial), revocation state, responder binding to the
+## issuer, the response signature, and the validity window when a
+## reference stamp is supplied.
+##
+## ### Parameters
+## - `resp_der`: DER OCSPResponse bytes (fetched or stapled).
+## - `leaf_der`: Leaf certificate DER bytes.
+## - `issuer_der`: Issuer certificate DER bytes.
+## - `now_stamp`: `YYYYMMDDHHMMSSZ` reference (`""` skips freshness).
+##
+## ### Returns
+## Map with `status` (`good`/`revoked`/`unknown`/""), `verified` (1/0),
+## and `detail` fields. `verified` is 1 only when every check passes.
+pub function ocsp_validate_for_cert(resp_der, leaf_der, issuer_der, now_stamp: string = "") -> map
+    let fail = { "status": "", "verified": 0, "detail": "OCSP validation failed" }
+    let parsed = ocsp_parse_response(resp_der)
+    if parsed["error"] != ""
+        return { "status": "", "verified": 0, "detail": "OCSP parse error: " + parsed["error"] }
+    end
+    if parsed["status"] != 0
+        return { "status": "", "verified": 0, "detail": "OCSP responder error status " + str(parsed["status"]) }
+    end
+    let single = parsed["single"]
+    if single is null
+        return fail
+    end
+    if _ocsp_bytes_eq(single["hash_oid"], _ocsp_sha1_oid()) == 0
+        return { "status": "", "verified": 0, "detail": "OCSP CertID needs SHA-1" }
+    end
+    let name_der = cert_issuer_name_der(issuer_der)
+    let key_bytes = cert_issuer_key_bytes(issuer_der)
+    if len(name_der) == 0 or len(key_bytes) == 0
+        return { "status": "", "verified": 0, "detail": "issuer identity unreadable" }
+    end
+    if _ocsp_bytes_eq(single["name_hash"], crypto::sha1_bytes(name_der)) == 0
+        return { "status": "", "verified": 0, "detail": "OCSP issuer name mismatch" }
+    end
+    if _ocsp_bytes_eq(single["key_hash"], crypto::sha1_bytes(key_bytes)) == 0
+        return { "status": "", "verified": 0, "detail": "OCSP issuer key mismatch" }
+    end
+    let leaf_serial = _ocsp_norm_serial_hex(parse_serial_hex(leaf_der))
+    let resp_serial = _ocsp_norm_serial_hex(crypto::bytes_to_hex(single["serial"]))
+    if leaf_serial == "" or leaf_serial != resp_serial
+        return { "status": "", "verified": 0, "detail": "OCSP serial mismatch" }
+    end
+    if single["cert_status"] != "good"
+        return { "status": single["cert_status"], "verified": 0, "detail": "certificate " + single["cert_status"] }
+    end
+    if parsed["responder_tag"] == 162
+        if _ocsp_bytes_eq(parsed["responder_id"], crypto::sha1_bytes(key_bytes)) == 0
+            return { "status": "good", "verified": 0, "detail": "OCSP responder not bound to issuer" }
+        end
+    elif parsed["responder_tag"] == 161
+        if _ocsp_bytes_eq(parsed["responder_id"], name_der) == 0
+            return { "status": "good", "verified": 0, "detail": "OCSP responder not bound to issuer" }
+        end
+    else
+        return { "status": "good", "verified": 0, "detail": "OCSP responder id unsupported" }
+    end
+    let sig_ok = 0
+    if oid_is_rsa_sha256(parsed["sig_alg_oid"]) == 1
+        let parent_key = crypto::rsa_parse_pubkey(issuer_der)
+        if parent_key["error"] == ""
+            sig_ok = crypto::rsa_verify(parent_key["n"], parent_key["e"], "sha256", parsed["tbs"], parsed["sig"])
+        end
+    elif oid_is_ecdsa_sha256(parsed["sig_alg_oid"]) == 1
+        let spki = cert_spki_bytes(issuer_der)
+        if len(spki) > 0
+            let ecpub = crypto::ec_parse_spki_pubkey(spki)
+            if ecpub["error"] == ""
+                sig_ok = crypto::ecdsa_verify_hash(ecpub["pub"], crypto::sha256_bytes(parsed["tbs"]), parsed["sig"])
+            end
+        end
+    else
+        return { "status": "good", "verified": 0, "detail": "OCSP signature algorithm unsupported" }
+    end
+    if sig_ok == 0
+        return { "status": "good", "verified": 0, "detail": "OCSP signature invalid" }
+    end
+    if now_stamp is not null and now_stamp != ""
+        if single["this_update"] == "" or single["this_update"] > now_stamp
+            return { "status": "good", "verified": 0, "detail": "OCSP response not yet valid" }
+        end
+        if single["next_update"] != "" and single["next_update"] < now_stamp
+            return { "status": "good", "verified": 0, "detail": "OCSP response stale" }
+        end
+    end
+    return { "status": "good", "verified": 1, "detail": "OCSP good, signature verified" }
+end

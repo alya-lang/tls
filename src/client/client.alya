@@ -14,6 +14,7 @@ import "../core/record.alya"
 import "../core/handshake.alya"
 import "../cert/verify.alya"
 import "../cert/x509.alya"
+import "../cert/ocsp.alya"
 import "../io/raw.alya"
 
 ## Builds a client configuration alias with secure defaults.
@@ -155,6 +156,8 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
     let msg_buf = []
     let cert_body = []
     let cert_found = 0
+    let ocsp_body = []
+    let ocsp_found = 0
     let ske_body = []
     let ske_found = 0
     let done_seen = 0
@@ -204,6 +207,10 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
                 ske_body = msg_buf
                 ske_found = 1
             end
+            if msg_type == TlsHandshakeType.CertificateStatus
+                ocsp_body = msg_buf
+                ocsp_found = 1
+            end
             if msg_type == TlsHandshakeType.ServerHelloDone
                 done_seen = 1
             end
@@ -242,8 +249,16 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
             return ctx.fail("peer certificate message was empty")
         end
         ctx.keys["leaf_der"] = chain[0].der
+        if len(chain) > 1
+            ctx.keys["issuer_der"] = chain[1].der
+        else
+            ctx.keys["issuer_der"] = chain[0].der
+        end
         if ske_found == 1
             ctx.keys["ske_body"] = ske_body
+        end
+        if ocsp_found == 1
+            ctx.keys["ocsp_stapled"] = ocsp_body
         end
         tls_verify_session(ctx, chain[0], "", "")
         return ctx
@@ -251,6 +266,39 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
     if ctx.config.verify_mode == TlsVerifyMode.Required
         return ctx.fail("no certificate presented by peer")
     end
+    return ctx
+end
+
+## Validates a stapled OCSP response captured during the handshake.
+##
+## No stapled message means no opinion (returns the context untouched).
+## A present response must validate `good` against the leaf plus issuer
+## pair, otherwise the context fails closed.
+##
+## ### Parameters
+## - `ctx`: Handshaked `TlsContext` (mutated: may fail).
+##
+## ### Returns
+## The same context, failed when the stapled status is not verified good.
+pub function tls_check_stapled_ocsp(ctx: TlsContext) -> TlsContext
+    let stapled = ctx.keys["ocsp_stapled"]
+    if stapled is null or len(stapled) == 0
+        return ctx
+    end
+    let cs = cert_status_parse_body(stapled)
+    if cs["error"] != ""
+        return ctx.fail("stapled OCSP response malformed")
+    end
+    let leaf = ctx.keys["leaf_der"]
+    let issuer = ctx.keys["issuer_der"]
+    if issuer is null or len(issuer) == 0
+        issuer = leaf
+    end
+    let v = ocsp_validate_for_cert(cs["resp"], leaf, issuer, "")
+    if v["status"] != "good" or v["verified"] == 0
+        return ctx.fail("stapled OCSP rejected: " + v["detail"])
+    end
+    ctx.keys["ocsp_status"] = v["status"]
     return ctx
 end
 

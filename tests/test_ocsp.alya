@@ -1,0 +1,92 @@
+## Test suite for OCSP response parsing and validation.
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+import "std/test"
+import "../src/lib.alya" as tls
+import "crypto" as crypto
+
+function ocsp_der() -> array
+    return crypto::hex_to_bytes("308201020a0100a081fc3081f906092b06010505073001010481eb3081e8308190a21604147fa2fd6936775a520d6270a69251ff1a3f5c4b03180f32303236303932373032313732345a30653063303b300906052b0e03021a050004143625ae2d413fc5c0607825be134fcc26bd754a6604147fa2fd6936775a520d6270a69251ff1a3f5c4b03020222228000180f32303236303932373032313732345aa011180f32303236303932383032313732345a300a06082a8648ce3d040302034700304402203c3465db95c89e02cc58ae6d9752719270f8f65e69282129fb6273918e17b67702202d8c30cce762fcf9eb9987a7c0c0b94de45c10445e606db0360a41de17a4d07e")
+end
+
+function ocsp_ca_der() -> array
+    return crypto::hex_to_bytes("308201353081dba00302010202021111300a06082a8648ce3d04030230193117301506035504030c0e6f6373702d746573742d726f6f74301e170d3236303932363032313732345a170d3236313032373032313732345a30193117301506035504030c0e6f6373702d746573742d726f6f743059301306072a8648ce3d020106082a8648ce3d030107034200040fe3dd60ee6807f20f0391ae112f18b2b197c35a74e55fa2236b3beae1ab735030b39c8af7359d1e35313f5b17e725b068f79843fcdb54296d0bba3380f1ce53a3133011300f0603551d130101ff040530030101ff300a06082a8648ce3d0403020349003046022100aa426a057ffb8eef4b5cb6be6123c1b0a976a8e439e05ee0ced8ccdeede5ce50022100b952a4912da4ce824b17fab78e4f2eac2326a293c94a9240fcb781fd0a7fc345")
+end
+
+function ocsp_leaf_der() -> array
+    return crypto::hex_to_bytes("3082013a3081e1a00302010202022222300a06082a8648ce3d04030230193117301506035504030c0e6f6373702d746573742d726f6f74301e170d3236303932363032313732345a170d3236303932393032313732345a30173115301306035504030c0c6c6561662e6578616d706c653059301306072a8648ce3d020106082a8648ce3d030107034200040d86f97eb29900e720f7cf136364948af107638969f82fe428bd8351a0516b4c7f84efa933320402ee9991657598b9e06d3626d0ba3f160de17d49cef1ae40a0a31b301930170603551d110410300e820c6c6561662e6578616d706c65300a06082a8648ce3d04030203480030450220514657d251a5acff03993ad9c3002f522f0cf6320c92e00f7b4791ded0bb14a6022100bff0ad774d2b8c9bb6644f0399c3320dcae7e599ba9087ef093db70cd85a4d85")
+end
+
+function main()
+    test_suite("OCSP Tests")
+    let r = runner_new()
+
+    # 1. Response parses with good status.
+    let p = tls::ocsp_parse_response(ocsp_der())
+    runner_assert_str_eq(r, p["error"], "", "ocsp parses")
+    runner_assert_eq(r, p["status"], 0, "response successful")
+    runner_assert_eq(r, p["single"] is null, 0, "single present")
+    runner_assert_str_eq(r, p["single"]["cert_status"], "good", "cert status good")
+    runner_assert_true(r, len(p["tbs"]) > 0, "tbs present")
+    runner_assert_true(r, len(p["single"]["this_update"]) > 0, "thisUpdate present")
+
+    # 2. Full validation against the leaf/issuer pair.
+    let v = tls::ocsp_validate_for_cert(ocsp_der(), ocsp_leaf_der(), ocsp_ca_der(), "")
+    runner_assert_str_eq(r, v["status"], "good", "validation status good")
+    runner_assert_eq(r, v["verified"], 1, "validation verified")
+
+    # 3. Wrong leaf serial fails closed.
+    let v2 = tls::ocsp_validate_for_cert(ocsp_der(), ocsp_ca_der(), ocsp_ca_der(), "")
+    runner_assert_eq(r, v2["verified"], 0, "serial mismatch fails")
+
+    # 4. Garbage input fails closed.
+    let v3 = tls::ocsp_validate_for_cert([48, 1, 2], ocsp_leaf_der(), ocsp_ca_der(), "")
+    runner_assert_eq(r, v3["verified"], 0, "garbage fails")
+
+    # 5. status_request extension shape.
+    let sreq = tls::status_request_extension()
+    runner_assert_eq(r, len(sreq), 9, "status_request length")
+    runner_assert_eq(r, sreq[0] * 256 + sreq[1], 5, "status_request type")
+    runner_assert_eq(r, sreq[4], 1, "status_request ocsp kind")
+
+    # 6. ClientHello carries status_request; parser flags it.
+    let cfg = tls::config("example.com")
+    let hello = tls::build_client_hello(cfg)
+    let hrt = tls::parse_client_hello(hello["body"])
+    runner_assert_str_eq(r, hrt["error"], "", "own hello parses")
+    runner_assert_eq(r, hrt["ocsp"], 1, "own hello requests ocsp")
+
+    # 7. CertificateStatus build/parse roundtrip.
+    let csb = tls::cert_status_build_body(ocsp_der())
+    runner_assert_true(r, len(csb) > 0, "cert status builds")
+    let csp = tls::cert_status_parse_body(csb)
+    runner_assert_str_eq(r, csp["error"], "", "cert status parses")
+    runner_assert_str_eq(r, crypto::bytes_to_hex(csp["resp"]), crypto::bytes_to_hex(ocsp_der()), "stapled bytes survive")
+    runner_assert_eq(r, tls::cert_status_parse_body([22, 1])["error"] != "", 1, "short status rejected")
+
+    # 8. Server stapling toggle stores the response.
+    let srv = tls::server(18444, "127.0.0.1")
+    tls::tls_server_enable_ocsp(srv, ocsp_der())
+    runner_assert_eq(r, len(srv.ocsp_response), len(ocsp_der()), "stapled response stored")
+
+    # 9. ServerHello echoes status_request when stapling.
+    let sh_plain = tls::build_server_hello(771, 156, null, "", 0)
+    let sh_staple = tls::build_server_hello(771, 156, null, "", 1)
+    runner_assert_true(r, len(sh_staple["body"]) > len(sh_plain["body"]), "staple flag grows hello")
+    let shb = sh_staple["body"]
+    let found_ext = 0
+    let si = 0
+    while si + 4 <= len(shb)
+        if shb[si] == 0 and shb[si + 1] == 5 and shb[si + 2] == 0 and shb[si + 3] == 0
+            found_ext = 1
+        end
+        si += 1
+    end
+    runner_assert_eq(r, found_ext, 1, "staple echo present")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()
