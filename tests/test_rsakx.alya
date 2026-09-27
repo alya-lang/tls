@@ -3,6 +3,7 @@
 
 import "std/test"
 import "crypto" as crypto
+import "math" as math
 import "../src/lib.alya" as tls
 
 function main()
@@ -16,8 +17,8 @@ function main()
     let pre = [1, 2, 3, 4]
     let enc = tls::rsa_encrypt_premaster(n, e, pre)
     runner_assert_eq(r, len(enc), 16, "ciphertext is modulus length")
-    let raw = crypto::bi_modexp(crypto::bi_from_bytes(enc), crypto::bi_from_bytes(d), crypto::bi_from_bytes(n))
-    let back = crypto::bi_to_bytes(raw, 16)
+    let raw = math::bi_modexp(math::bi_from_bytes(enc), math::bi_from_bytes(d), math::bi_from_bytes(n))
+    let back = math::bi_to_bytes(raw, 16)
     runner_assert_eq(r, back[0], 0, "padding block type zero")
     runner_assert_eq(r, back[1], 2, "padding block type two")
     runner_assert_eq(r, back[14], 3, "payload tail byte")

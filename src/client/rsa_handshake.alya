@@ -7,6 +7,7 @@
 ## suites in v1 (ECDHE needs P-256, tracked separately).
 
 import "crypto" as crypto
+import "math" as math
 import "../types.alya"
 import "../core/version.alya"
 import "../core/cipher.alya"
@@ -86,8 +87,8 @@ pub function rsa_encrypt_premaster(n_bytes, e: int, premaster) -> array
         em.push(premaster[i])
         i += 1
     end
-    let c = crypto::bi_modexp_int(crypto::bi_from_bytes(em), e, crypto::bi_from_bytes(n_bytes))
-    return crypto::bi_to_bytes(c, k)
+    let c = math::bi_modexp_int(math::bi_from_bytes(em), e, math::bi_from_bytes(n_bytes))
+    return math::bi_to_bytes(c, k)
 end
 
 ## Completes the RSA handshake: key exchange, CCS/Finished, verification.
