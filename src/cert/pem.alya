@@ -85,6 +85,40 @@ pub function pem_first_cert_der(pem) -> array
     return pem_to_der(pem, "CERTIFICATE")
 end
 
+## Decodes every certificate from a PEM bundle in order.
+##
+## ### Parameters
+## - `pem`: PEM bundle text.
+##
+## ### Returns
+## Array of DER byte arrays (possibly empty).
+pub function pem_all_cert_ders(pem) -> array
+    let out = []
+    if pem is null
+        return out
+    end
+    let marker = "-----BEGIN CERTIFICATE-----"
+    let closer = "-----END CERTIFICATE-----"
+    let rest = pem
+    while 1
+        let start = index_of(rest, marker)
+        if start < 0
+            break
+        end
+        let stop = index_of(rest, closer)
+        if stop < 0 or stop <= start
+            break
+        end
+        let block = substring(rest, start, stop + len(closer) - start)
+        let der = pem_to_der(block, "CERTIFICATE")
+        if len(der) > 0
+            out.push(der)
+        end
+        rest = substring(rest, stop + len(closer), len(rest) - stop - len(closer))
+    end
+    return out
+end
+
 ## Counts certificate blocks inside a PEM bundle.
 ##
 ## ### Parameters

@@ -1,0 +1,65 @@
+## TLS server handshake tests (offline + captured vectors)
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+
+import "std/test"
+import "../src/lib.alya" as tls
+
+function captured_hello() -> array
+    return [3, 3, 211, 148, 92, 133, 47, 81, 61, 136, 165, 41, 117, 65, 14, 241, 94, 201, 237, 105, 30, 161, 213, 125, 107, 209, 151, 36, 99, 248, 132, 37, 175, 233, 0, 0, 2, 0, 156, 1, 0, 0, 66, 0, 0, 0, 14, 0, 12, 0, 0, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116, 0, 16, 0, 14, 0, 12, 2, 104, 50, 8, 104, 116, 116, 112, 47, 49, 46, 49, 0, 13, 0, 14, 0, 12, 4, 3, 8, 4, 4, 1, 5, 3, 8, 5, 5, 1, 0, 10, 0, 8, 0, 6, 0, 23, 0, 24, 0, 29]
+end
+
+function main()
+    test_suite("TLS Server Tests")
+    let r = runner_new()
+
+    # 1. Real captured ClientHello parses (openssl s_server session)
+    let ch = tls::parse_client_hello(captured_hello())
+    runner_assert_str_eq(r, ch["error"], "", "captured hello parses")
+    runner_assert_eq(r, ch["version"], 771, "captured version TLS 1.2")
+    runner_assert_eq(r, len(ch["random"]), 32, "captured random length")
+    runner_assert_eq(r, len(ch["suites"]), 1, "captured single suite")
+    runner_assert_eq(r, ch["suites"][0], 156, "captured RSA suite")
+    runner_assert_str_eq(r, ch["sni"], "localhost", "captured SNI")
+    runner_assert_eq(r, len(ch["alpn"]), 2, "captured ALPN count")
+    runner_assert_str_eq(r, ch["alpn"][0], "h2", "captured ALPN first")
+
+    # 2. Roundtrip with our own builder
+    let cfg = tls::config("example.com")
+    let hello = tls::build_client_hello(cfg)
+    let rt = tls::parse_client_hello(hello["body"])
+    runner_assert_str_eq(r, rt["error"], "", "own hello roundtrips")
+    runner_assert_str_eq(r, rt["sni"], "example.com", "roundtrip SNI")
+    runner_assert_true(r, len(rt["suites"]) >= 4, "roundtrip suites")
+
+    # 3. Truncated input fails closed
+    let bad = tls::parse_client_hello([3, 3])
+    runner_assert_true(r, bad["error"] != "", "short hello errors")
+
+    # 4. Certificate message build/parse roundtrip
+    let fake_der = [48, 3, 1, 2, 3]
+    let cert_body = tls::build_certificate_body([fake_der])
+    runner_assert_eq(r, cert_body[0], 0, "chain total hi")
+    runner_assert_eq(r, cert_body[2], 8, "chain total = entry header + der")
+    runner_assert_eq(r, cert_body[5], 5, "entry length byte")
+
+    # 5. Server defaults prefer RSA-only negotiation
+    let srv = tls::server(18443, "127.0.0.1")
+    let nego = tls::tls_server_negotiate(srv, [49199, 156], ["h2"])
+    runner_assert_str_eq(r, nego["error"], "", "negotiation clean")
+    runner_assert_eq(r, nego["suite"], 156, "RSA suite forced by default allowlist")
+    runner_assert_str_eq(r, nego["alpn"], "h2", "ALPN negotiated")
+    let no_overlap = tls::tls_server_negotiate(srv, [49199], ["h2"])
+    runner_assert_eq(r, no_overlap["suite"], 0, "ECDHE-only offer rejected")
+
+    # 6. Accept gates without network
+    runner_assert_eq(r, tls::tls_server_has_identity(srv), 0, "no identity yet")
+    let idle = tls::tls_accept_handshake(srv, 10)
+    runner_assert_eq(r, idle == null, 1, "stopped server yields null")
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()

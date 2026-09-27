@@ -80,11 +80,29 @@ end
 ## - `max_len`: Read cap. Defaults to `4096`.
 ##
 ## ### Returns
-## Byte array (empty on close, error, or invalid input).
+## Byte array (empty on close, error, or timeout).
 pub function raw_recv(sock: int, max_len: int = 4096) -> array
+    let status = raw_recv_status(sock, max_len)
+    return status["data"]
+end
+
+## Receives with orderly-close detection.
+##
+## Distinguishes peer close (`closed = 1`, recv returned 0) from
+## timeout/error (empty data, `closed = 0`) so read loops can retry
+## slow peers instead of aborting on the first timeout.
+##
+## ### Parameters
+## - `sock`: Connected socket handle.
+## - `max_len`: Read cap. Defaults to `4096`.
+##
+## ### Returns
+## Map with `data` byte array and `closed` flag.
+pub function raw_recv_status(sock: int, max_len: int = 4096) -> map
     let out = []
+    let closed = 0
     if sock < 0
-        return out
+        return { "data": out, "closed": 0 }
     end
     let cap = max_len
     if cap <= 0
@@ -94,7 +112,9 @@ pub function raw_recv(sock: int, max_len: int = 4096) -> array
     let n = alya_tls_sock_recv(sock, buf, cap)
     if n > 0
         out = ptr_to_bytes(buf, n)
+    elif n == 0
+        closed = 1
     end
     free(buf)
-    return out
+    return { "data": out, "closed": closed }
 end

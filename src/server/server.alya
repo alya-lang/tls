@@ -1,18 +1,40 @@
-## TLS server: listener lifecycle and hello inspection.
+## TLS server: listener lifecycle and RSA handshake termination.
 ##
 ## Part of the Alya Language package ecosystem (https://github.com/alya-lang).
-## Mirrors the `http` server state machine: plain TCP accept, ClientHello
-## inspection (SNI extraction), and raw tunnel I/O. Full server-side key
-## exchange and record encryption build on `core/keys.alya`.
+## Terminates TLS 1.2 with RSA key exchange: ClientHello parsing, ServerHello
+## plus Certificate flight, premaster decryption with the server private key,
+## and verified Finished exchange. ECDHE suites need P-256 (tracked work);
+## the default allowlist is RSA-only so negotiation always lands somewhere
+## this package can actually serve.
 
 import "std/net" as net
+import "crypto" as crypto
 import "../types.alya"
 import "../core/version.alya"
 import "../core/cipher.alya"
 import "../core/record.alya"
 import "../core/handshake.alya"
+import "../core/keys.alya"
+import "../core/protect.alya"
+import "../cert/pem.alya"
 import "../cert/verify.alya"
 import "../io/raw.alya"
+import "../client/client.alya"
+import "../client/rsa_handshake.alya"
+
+# Copies a byte window from an array.
+function srv_slice(data, offset: int, n: int) -> array
+    let part = []
+    if data is null or n <= 0
+        return part
+    end
+    let i = 0
+    while i < n and offset + i < len(data)
+        part.push(data[offset + i])
+        i += 1
+    end
+    return part
+end
 
 ## Server listener handle.
 ##
@@ -40,6 +62,11 @@ end
 
 ## Creates a new TLS server listener.
 ##
+## The default cipher allowlist is RSA-only: this package terminates RSA
+## key exchange today, so advertising ECDHE suites would negotiate a
+## handshake it cannot finish. Override with `tls_server_set_ciphers`
+## once P-256 support lands.
+##
 ## ### Parameters
 ## - `port`: Local port. Defaults to `8443`.
 ## - `host`: Local interface label. Defaults to `"0.0.0.0"`.
@@ -59,7 +86,7 @@ pub function tls_server_new(port: int = 8443, host: string = "0.0.0.0") -> TlsSe
         cert_pem: "",
         key_pem: "",
         require_client_cert: 0,
-        cipher_allowlist: [],
+        cipher_allowlist: [SUITE_RSA_AES128_GCM_SHA256],
         alpn: ["h2", "http/1.1"]
     }
 end
@@ -286,4 +313,400 @@ pub function tls_server_verify_client(server: TlsServer, ctx: TlsContext, cert, 
         ctx.fail(verdict["detail"])
     end
     return verdict
+end
+
+## Reads one full handshake message from a socket buffer.
+##
+## Accumulates records until a complete message assembles or input ends.
+## Non-handshake records (ChangeCipherSpec) are DELIVERED, not errors:
+## returns map with `found`, `msg_type`, `body`, `rec_type`, `fragment`,
+## `pending` (leftover), and `error` fields. Never throws.
+pub function srv_read_message(sock: int, pending, max_rounds: int = 8) -> map
+    let buf = pending
+    if buf is null
+        buf = []
+    end
+    let stream = []
+    let msg_type = -1
+    let msg_need = -1
+    let msg_buf = []
+    let last_raw = []
+    let rounds = 0
+    while rounds < max_rounds + 1
+        let progress = 1
+        while progress == 1 and len(buf) >= 5
+            if msg_need >= 0 and len(msg_buf) >= msg_need
+                break
+            end
+            progress = 0
+            let rec = record_decode(buf)
+            if rec["error"] != ""
+                if rec["error"] == "truncated record"
+                    break
+                end
+                return { "found": 0, "msg_type": 0, "body": [], "rec_type": 0, "fragment": [], "raw": [], "pending": buf, "error": rec["error"] }
+            end
+            last_raw = srv_slice(buf, 0, rec["consumed"])
+            buf = srv_slice(buf, rec["consumed"], len(buf) - rec["consumed"])
+            progress = 1
+            if rec["type"] == TlsContentType.Alert
+                if msg_need >= 0 and len(msg_buf) >= msg_need
+                    let back = []
+                    let bi = 0
+                    while bi < len(last_raw)
+                        back.push(last_raw[bi])
+                        bi += 1
+                    end
+                    bi = 0
+                    while bi < len(buf)
+                        back.push(buf[bi])
+                        bi += 1
+                    end
+                    return { "found": 1, "msg_type": msg_type, "body": msg_buf, "rec_type": TlsContentType.Handshake, "fragment": [], "raw": last_raw, "pending": back, "error": "" }
+                end
+                return { "found": 0, "msg_type": 0, "body": [], "rec_type": rec["type"], "fragment": rec["fragment"], "raw": last_raw, "pending": buf, "error": "peer alert" }
+            end
+            if rec["type"] != TlsContentType.Handshake
+                if msg_need >= 0 and len(msg_buf) >= msg_need
+                    let back = []
+                    let bi = 0
+                    while bi < len(last_raw)
+                        back.push(last_raw[bi])
+                        bi += 1
+                    end
+                    bi = 0
+                    while bi < len(buf)
+                        back.push(buf[bi])
+                        bi += 1
+                    end
+                    return { "found": 1, "msg_type": msg_type, "body": msg_buf, "rec_type": TlsContentType.Handshake, "fragment": [], "raw": last_raw, "pending": back, "error": "" }
+                end
+                return { "found": 0, "msg_type": 0, "body": [], "rec_type": rec["type"], "fragment": rec["fragment"], "raw": last_raw, "pending": buf, "error": "" }
+            end
+            let f = 0
+            while f < len(rec["fragment"])
+                stream.push(rec["fragment"][f])
+                f += 1
+            end
+            while msg_need == -1 and len(stream) >= 4
+                msg_type = stream[0]
+                msg_need = stream[1] * 65536 + stream[2] * 256 + stream[3]
+                stream = srv_slice(stream, 4, len(stream) - 4)
+            end
+            while msg_need >= 0 and len(stream) > 0 and len(msg_buf) < msg_need
+                msg_buf.push(stream[0])
+                stream = srv_slice(stream, 1, len(stream) - 1)
+            end
+        end
+        if msg_need >= 0 and len(msg_buf) >= msg_need
+            return { "found": 1, "msg_type": msg_type, "body": msg_buf, "rec_type": TlsContentType.Handshake, "fragment": [], "raw": last_raw, "pending": buf, "error": "" }
+        end
+        if rounds >= max_rounds
+            break
+        end
+        let st = raw_recv_status(sock, 4096)
+        if st["closed"] == 1
+            break
+        end
+        let chunk = st["data"]
+        let c = 0
+        while c < len(chunk)
+            buf.push(chunk[c])
+            c += 1
+        end
+        rounds += 1
+    end
+    return { "found": 0, "msg_type": 0, "body": [], "rec_type": 0, "fragment": [], "raw": [], "pending": buf, "error": "incomplete message" }
+end
+
+## Accepts one client and runs the full RSA server handshake.
+##
+## Parses ClientHello, negotiates version/suite/ALPN, flights ServerHello,
+## Certificate, and ServerHelloDone, decrypts the premaster with the
+## server private key, and verifies the client Finished. Returns an
+## Established server-role context, a Failed context, or null when no
+## client arrived. Failures are fail-closed with `last_error`.
+pub function tls_accept_handshake(server: TlsServer, timeout_ms: int = 5000)
+    if server is null or server.running == 0 or server.server_sock < 0
+        return null
+    end
+    if tls_server_has_identity(server) == 0
+        return null
+    end
+    if server.require_client_cert == 1
+        return null
+    end
+    let ready = net::tcp_poll(server.server_sock, timeout_ms)
+    if ready != 1
+        return null
+    end
+    let sock = net::tcp_accept(server.server_sock)
+    if sock < 0
+        return null
+    end
+    net::tcp_set_timeout(sock, 5000)
+    let cfg = tls_config_new("server", server.port, TlsVerifyMode.Optional)
+    let ctx = tls_context_new(cfg)
+    ctx.sock = sock
+    ctx.role = TlsRole.Server
+    ctx.state = TlsState.TcpConnected
+    let hello_msg = srv_read_message(sock, [])
+    if hello_msg["error"] != "" or hello_msg["msg_type"] != TlsHandshakeType.ClientHello
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("no ClientHello received")
+    end
+    let hello = parse_client_hello(hello_msg["body"])
+    if hello["error"] != ""
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("ClientHello parse error: " + hello["error"])
+    end
+    if version_compare(hello["version"], TlsVersion.Tls12) < 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("client TLS version too old")
+    end
+    let nego = tls_server_negotiate(server, hello["suites"], hello["alpn"])
+    if nego["error"] != ""
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail(nego["error"])
+    end
+    if nego["suite"] != SUITE_RSA_AES128_GCM_SHA256
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("only RSA key exchange supported in v1")
+    end
+    let transcript = []
+    transcript = tls_transcript_append(transcript, TlsHandshakeType.ClientHello, hello_msg["body"])
+    let srv_random = crypto::random_bytes(32)
+    let sh = build_server_hello(TlsVersion.Tls12, nego["suite"], srv_random, "")
+    if raw_send(sock, sh["bytes"]) < 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("failed to send ServerHello")
+    end
+    transcript = tls_transcript_append(transcript, TlsHandshakeType.ServerHello, sh["body"])
+    let ders = pem_all_cert_ders(server.cert_pem)
+    if len(ders) == 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("no server certificate to send")
+    end
+    let cert_body = build_certificate_body(ders)
+    let cert_msg = [TlsHandshakeType.Certificate, 0, 0, 0]
+    let clen = len(cert_body)
+    cert_msg[1] = bit_and(bit_shr(clen, 16), 255)
+    cert_msg[2] = bit_and(bit_shr(clen, 8), 255)
+    cert_msg[3] = bit_and(clen, 255)
+    let cb = 0
+    while cb < len(cert_body)
+        cert_msg.push(cert_body[cb])
+        cb += 1
+    end
+    let cert_rec = record_encode(TlsContentType.Handshake, TlsVersion.Tls12, cert_msg)
+    if raw_send(sock, cert_rec["bytes"]) < 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("failed to send Certificate")
+    end
+    transcript = tls_transcript_append(transcript, TlsHandshakeType.Certificate, cert_body)
+    let shd = [TlsHandshakeType.ServerHelloDone, 0, 0, 0]
+    let shd_rec = record_encode(TlsContentType.Handshake, TlsVersion.Tls12, shd)
+    if raw_send(sock, shd_rec["bytes"]) < 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("failed to send ServerHelloDone")
+    end
+    transcript = tls_transcript_append(transcript, TlsHandshakeType.ServerHelloDone, [])
+    let cke_pending = hello_msg["pending"]
+    let cke_msg = { "found": 0, "msg_type": 0, "body": [], "rec_type": 0, "fragment": [], "raw": [], "pending": [], "error": "no ClientKeyExchange received" }
+    let cke_rounds = 0
+    while cke_rounds < 8
+        cke_msg = srv_read_message(sock, cke_pending)
+        if cke_msg["error"] != ""
+            break
+        end
+        if cke_msg["found"] == 1 and cke_msg["msg_type"] == TlsHandshakeType.ClientKeyExchange
+            break
+        end
+        if cke_msg["found"] == 1
+            cke_pending = cke_msg["pending"]
+            cke_rounds += 1
+            continue
+        end
+        break
+    end
+    if cke_msg["error"] != "" or cke_msg["found"] == 0 or cke_msg["msg_type"] != TlsHandshakeType.ClientKeyExchange
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("no ClientKeyExchange received")
+    end
+    transcript = tls_transcript_append(transcript, TlsHandshakeType.ClientKeyExchange, cke_msg["body"])
+    let cke = cke_msg["body"]
+    if len(cke) < 2
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("malformed ClientKeyExchange")
+    end
+    let ek_len = cke[0] * 256 + cke[1]
+    if ek_len <= 0 or 2 + ek_len > len(cke)
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("malformed ClientKeyExchange")
+    end
+    let enc = []
+    let e = 0
+    while e < ek_len
+        enc.push(cke[2 + e])
+        e += 1
+    end
+    let key_der = pem_to_der(server.key_pem, "PRIVATE KEY")
+    let priv = crypto::rsa_parse_private_key(key_der)
+    if priv["error"] != ""
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("server private key unparseable")
+    end
+    let opened = crypto::rsa_decrypt_crt_bytes(priv, enc)
+    if opened["error"] != ""
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("premaster decryption failed")
+    end
+    let pre = opened["plaintext"]
+    if len(pre) != 48 or pre[0] != 3
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("premaster version mismatch")
+    end
+    let cli_rand = hello["random"]
+    let master = master_secret(pre, cli_rand, srv_random)
+    let kb = key_block(master, srv_random, cli_rand, 40)
+    let parts = split_key_block(kb, 0, 16, 4)
+    if len(parts["server_key"]) == 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("key block derivation failed")
+    end
+    ctx.session.version = TlsVersion.Tls12
+    ctx.session.cipher_suite = nego["suite"]
+    ctx.session.sni = hello["sni"]
+    ctx.session.alpn = nego["alpn"]
+    ctx.session.state = TlsState.Handshaked
+    ctx.session.created_ms = clock_ms()
+    ctx.state = TlsState.Handshaked
+    ctx.keys["master"] = master
+    ctx.keys["ckey"] = parts["client_key"]
+    ctx.keys["skey"] = parts["server_key"]
+    ctx.keys["civ"] = parts["client_iv"]
+    ctx.keys["siv"] = parts["server_iv"]
+    ctx.keys["seq_send"] = 0
+    ctx.keys["seq_recv"] = 0
+    ctx.keys["transcript"] = transcript
+    let ccs_msg = srv_read_message(sock, cke_msg["pending"])
+    if ccs_msg["error"] != "" or ccs_msg["rec_type"] != TlsContentType.ChangeCipherSpec
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("no ChangeCipherSpec received")
+    end
+    let fin_buf = ccs_msg["pending"]
+    if fin_buf is null
+        fin_buf = []
+    end
+    let fin_opened = { "type": 0, "plaintext": [], "error": "no client Finished received" }
+    let fin_rounds = 0
+    while fin_rounds < 9
+        if len(fin_buf) >= 5
+            let frec = record_decode(fin_buf)
+            if frec["error"] == ""
+                if frec["type"] == TlsContentType.Alert
+                    fin_opened = { "type": 0, "plaintext": [], "error": "peer alert" }
+                    break
+                end
+                if frec["type"] != TlsContentType.Handshake
+                    fin_opened = { "type": 0, "plaintext": [], "error": "no client Finished received" }
+                    break
+                end
+                let frail = srv_slice(fin_buf, 0, frec["consumed"])
+                fin_buf = srv_slice(fin_buf, frec["consumed"], len(fin_buf) - frec["consumed"])
+                fin_opened = tls_unprotect_record(ctx, frail)
+                break
+            elif frec["error"] != "truncated record"
+                fin_opened = { "type": 0, "plaintext": [], "error": frec["error"] }
+                break
+            end
+        end
+        if fin_rounds >= 8
+            break
+        end
+        let fst = raw_recv_status(sock, 4096)
+        if fst["closed"] == 1
+            break
+        end
+        let fchunk = fst["data"]
+        let fc = 0
+        while fc < len(fchunk)
+            fin_buf.push(fchunk[fc])
+            fc += 1
+        end
+        fin_rounds += 1
+    end
+    if fin_opened["error"] != "" or fin_opened["type"] != TlsContentType.Handshake
+        net::tcp_close(sock)
+        ctx.sock = -1
+        if fin_opened["error"] != ""
+            return ctx.fail("client Finished decrypt failed: " + fin_opened["error"])
+        end
+        return ctx.fail("client Finished decrypt failed")
+    end
+    let fin_pt = fin_opened["plaintext"]
+    if len(fin_pt) != 16 or fin_pt[0] != TlsHandshakeType.Finished
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("malformed client Finished")
+    end
+    let fin_verify = []
+    let fi = 4
+    while fi < len(fin_pt)
+        fin_verify.push(fin_pt[fi])
+        fi += 1
+    end
+    let thash = transcript_hash(transcript)
+    let expect = finished_verify_data(master, "client finished", thash)
+    if crypto::bytes_to_hex(fin_verify) != crypto::bytes_to_hex(expect)
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("client Finished mismatch")
+    end
+    transcript = tls_transcript_append(transcript, TlsHandshakeType.Finished, fin_verify)
+    let ccs = record_encode(TlsContentType.ChangeCipherSpec, TlsVersion.Tls12, [1])
+    if raw_send(sock, ccs["bytes"]) < 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("failed to send ChangeCipherSpec")
+    end
+    let svd = finished_verify_data(master, "server finished", transcript_hash(transcript))
+    let sfin_body = [TlsHandshakeType.Finished, 0, 0, 12]
+    let v = 0
+    while v < len(svd)
+        sfin_body.push(svd[v])
+        v += 1
+    end
+    let sfin_wire = tls_protect_record(ctx, TlsContentType.Handshake, sfin_body)
+    if len(sfin_wire) == 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("failed to protect server Finished")
+    end
+    if raw_send(ctx.sock, sfin_wire) < 0
+        net::tcp_close(sock)
+        ctx.sock = -1
+        return ctx.fail("failed to send server Finished")
+    end
+    ctx.session.state = TlsState.Established
+    ctx.state = TlsState.Established
+    ctx.keys["transcript"] = transcript
+    return ctx
 end

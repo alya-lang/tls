@@ -66,10 +66,11 @@ pub function tls_connect(config: TlsConfig) -> TlsContext
     let raw = []
     let tries = 0
     while tries < 8
-        let chunk = raw_recv(sock, 4096)
-        if len(chunk) == 0
+        let st = raw_recv_status(sock, 4096)
+        if st["closed"] == 1
             break
         end
+        let chunk = st["data"]
         let c = 0
         while c < len(chunk)
             raw.push(chunk[c])
@@ -213,10 +214,11 @@ pub function tls_read_peer_chain(ctx: TlsContext, leading = null) -> TlsContext
         if rounds >= 16
             break
         end
-        let chunk = raw_recv(ctx.sock, 4096)
-        if len(chunk) == 0
+        let st = raw_recv_status(ctx.sock, 4096)
+        if st["closed"] == 1
             break
         end
+        let chunk = st["data"]
         let c = 0
         while c < len(chunk)
             pending.push(chunk[c])

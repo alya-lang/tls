@@ -179,13 +179,15 @@ end
 ## - `state`: Connection state (`TlsState`).
 ## - `last_error`: Human-readable failure reason (empty on success).
 ## - `keys`: Handshake working map (transcript, randoms, leaf, traffic keys).
+## - `role`: Endpoint role (`TlsRole` Client or Server, default Client).
 pub struct TlsContext
     config,
     session,
     sock: int,
     state: int,
     last_error: string,
-    keys: map
+    keys: map,
+    role: int
 end
 
 # ───────────────────────────────────────────────────────────────
@@ -293,7 +295,8 @@ pub function tls_context_new(config, session = null) -> TlsContext
         sock: -1,
         state: TlsState.Closed,
         last_error: "",
-        keys: {}
+        keys: {},
+        role: TlsRole.Client
     }
 end
 
