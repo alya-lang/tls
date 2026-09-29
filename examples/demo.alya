@@ -96,13 +96,8 @@ function main()
     say "App frames:    " + str(len(frames)) + " (binary record bytes)"
     let alert = tls::tls_alert_bytes(tls::TlsAlertLevel.Warning, tls::TlsAlertDescription.CloseNotify, tls::TlsVersion.Tls12)
     say "Alert bytes:   " + str(len(alert))
-    let srv = tls::server(8443)
-    tls::tls_server_enable_tls(srv, "CERT", "KEY", 0)
-    tls::tls_server_set_ciphers(srv, tls::cipher_default_suites())
-    let nego = tls::tls_server_negotiate(srv, tls::cipher_default_suites(), ["h2"])
-    say "Negotiated:    " + tls::cipher_suite_name(nego["suite"]) + " / alpn=" + nego["alpn"]
-    say "Server ident:  " + str(tls::tls_server_has_identity(srv))
-    tls::tls_server_close(srv)
+    @cfg(feature = "server")
+    demo_server_handle()
     say ""
 
     # ───────────────────────────────────────────────────────────
@@ -115,4 +110,14 @@ function main()
     say "Done!"
 end
 
+@cfg(feature = "server")
+function demo_server_handle()
+    let srv = tls::server(8443)
+    tls::tls_server_enable_tls(srv, "CERT", "KEY", 0)
+    tls::tls_server_set_ciphers(srv, tls::cipher_default_suites())
+    let nego = tls::tls_server_negotiate(srv, tls::cipher_default_suites(), ["h2"])
+    say "Negotiated:    " + tls::cipher_suite_name(nego["suite"]) + " / alpn=" + nego["alpn"]
+    say "Server ident:  " + str(tls::tls_server_has_identity(srv))
+    tls::tls_server_close(srv)
+end
 main()

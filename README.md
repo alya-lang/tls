@@ -100,6 +100,25 @@ alya add tls --git https://github.com/alya-lang/tls --branch main
 alya install
 ```
 
+### Package Features
+
+| Feature | Default | Description |
+|:---|:---:|:---|
+| `server` | ✅ | TLS server listener (`server()`, `TlsServer`). Without it only the client remains. |
+| `ticket` | ✅ | Stateless session tickets (`ticket_issue`, `ticket_open`). |
+
+`crypto` and `math` stay required: handshakes, record protection, and verification have no fallback.
+
+```bash
+# Full build (default)
+alya install
+alya test
+
+# Slim client-only build
+alya install --no-default-features
+alya test --no-default-features
+```
+
 ---
 
 ## 🚀 Quick Start

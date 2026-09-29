@@ -14,6 +14,11 @@ keywords = ["alya", "alya-lang", "package", "tls", "ssl", "https", "security", "
 crypto = { git = "https://github.com/alya-lang/crypto", tag = "v0.7.0" }
 math = { git = "https://github.com/alya-lang/math", tag = "v0.1.0" }
 
+[features]
+default = ["server", "ticket"]
+server = []
+ticket = []
+
 [build]
 c-sources = ["c/tls.c"]
 c-flags = ["-O2"]

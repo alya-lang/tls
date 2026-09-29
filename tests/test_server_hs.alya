@@ -8,6 +8,7 @@ function captured_hello() -> array
     return [3, 3, 211, 148, 92, 133, 47, 81, 61, 136, 165, 41, 117, 65, 14, 241, 94, 201, 237, 105, 30, 161, 213, 125, 107, 209, 151, 36, 99, 248, 132, 37, 175, 233, 0, 0, 2, 0, 156, 1, 0, 0, 66, 0, 0, 0, 14, 0, 12, 0, 0, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116, 0, 16, 0, 14, 0, 12, 2, 104, 50, 8, 104, 116, 116, 112, 47, 49, 46, 49, 0, 13, 0, 14, 0, 12, 4, 3, 8, 4, 4, 1, 5, 3, 8, 5, 5, 1, 0, 10, 0, 8, 0, 6, 0, 23, 0, 24, 0, 29]
 end
 
+@cfg(feature = "server")
 function main()
     test_suite("TLS Server Tests")
     let r = runner_new()
@@ -56,6 +57,18 @@ function main()
     let idle = tls::tls_accept_handshake(srv, 10)
     runner_assert_eq(r, idle == null, 1, "stopped server yields null")
 
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+# Needs the feature: register an empty suite so the file still
+# compiles and passes in slim views.
+@cfg(not(feature = "server"))
+function main()
+    test_suite("TLS Server Tests (skipped without server feature)")
+    let r = runner_new()
     let failed = runner_summary(r)
     if failed > 0
         exit(1)

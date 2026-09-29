@@ -64,8 +64,11 @@ function main()
     runner_assert_eq(r, tls::cert_status_parse_body([22, 1])["error"] != "", 1, "short status rejected")
 
     # 8. Server stapling toggle stores the response.
+    @cfg(feature = "server")
     let srv = tls::server(18444, "127.0.0.1")
+    @cfg(feature = "server")
     tls::tls_server_enable_ocsp(srv, ocsp_der())
+    @cfg(feature = "server")
     runner_assert_eq(r, len(srv.ocsp_response), len(ocsp_der()), "stapled response stored")
 
     # 9. ServerHello echoes status_request when stapling.

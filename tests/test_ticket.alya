@@ -4,6 +4,7 @@
 import "std/test"
 import "../src/lib.alya" as tls
 
+@cfg(feature = "ticket")
 function main()
     test_suite("TLS Ticket Tests")
     let r = runner_new()
@@ -50,6 +51,18 @@ function main()
     runner_assert_true(r, tls::ticket_issue([1, 2], sess, master)["error"] != "", "short ticket key rejected")
     runner_assert_true(r, tls::ticket_issue(key, sess, [])["error"] != "", "empty master rejected")
 
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+# Needs the feature: register an empty suite so the file still
+# compiles and passes in slim views.
+@cfg(not(feature = "ticket"))
+function main()
+    test_suite("TLS Ticket Tests (skipped without ticket feature)")
+    let r = runner_new()
     let failed = runner_summary(r)
     if failed > 0
         exit(1)

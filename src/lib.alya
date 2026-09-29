@@ -18,7 +18,9 @@ import "./cert/ocsp.alya"
 import "./cert/crl.alya"
 import "./client/client.alya"
 import "./client/rsa_handshake.alya"
+@cfg(feature = "server")
 import "./server/server.alya"
+@cfg(feature = "ticket")
 import "./session/ticket.alya"
 
 # ═══════════════════════════════════════════════════════════════
@@ -50,6 +52,9 @@ pub function close(ctx: TlsContext) -> int
 end
 
 ## Creates a TLS server listener.
+##
+## Requires the `server` feature (default-on).
+@cfg(feature = "server")
 pub function server(port: int = 8443, host: string = "0.0.0.0") -> TlsServer
     return tls_server_new(port, host)
 end
