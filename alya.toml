@@ -1,6 +1,6 @@
 [package]
 name = "tls"
-version = "0.1.0"
+version = "0.6.0"
 alya-version = "0.0.19"
 entry = "src/lib.alya"
 description = "Native TLS and SSL client, server, certificate verification and secure networking toolkit for Alya"
@@ -12,7 +12,7 @@ keywords = ["alya", "alya-lang", "package", "tls", "ssl", "https", "security", "
 
 [dependencies]
 crypto = { git = "https://github.com/alya-lang/crypto", tag = "v0.7.0" }
-math = { git = "https://github.com/alya-lang/math", tag = "v0.1.0" }
+math = { git = "https://github.com/alya-lang/math", tag = "v0.4.0" }
 
 [features]
 default = ["server", "ticket"]
