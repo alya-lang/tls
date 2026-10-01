@@ -5,7 +5,6 @@
 ## secp256r1 named curve with RSA or ECDSA signatures. Point arithmetic
 ## stays in `crypto` (p256/ECDSA); wire hashing uses SHA-256.
 
-import "crypto" as crypto
 import "../types.alya"
 
 ## Named-curve id for secp256r1 (the only curve this server sends).
