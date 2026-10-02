@@ -29,12 +29,10 @@ function main()
     runner_assert_true(r, len(p["tbs"]) > 0, "tbs present")
     runner_assert_true(r, len(p["single"]["this_update"]) > 0, "thisUpdate present")
 
-    # 2. Full validation against the leaf/issuer pair (ECDSA requires 64-bit ints in crypto).
+    # 2. Full validation against the leaf/issuer pair.
     let v = tls::ocsp_validate_for_cert(ocsp_der(), ocsp_leaf_der(), ocsp_ca_der(), "")
     runner_assert_str_eq(r, v["status"], "good", "validation status good")
-    if target_arch() != "x86"
-        runner_assert_eq(r, v["verified"], 1, "validation verified")
-    end
+    runner_assert_eq(r, v["verified"], 1, "validation verified")
 
     # 3. Wrong leaf serial fails closed.
     let v2 = tls::ocsp_validate_for_cert(ocsp_der(), ocsp_ca_der(), ocsp_ca_der(), "")

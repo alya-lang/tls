@@ -88,34 +88,30 @@ function main()
     runner_assert_eq(r, tls::oid_is_ecdsa_sha256(sigalg), 1, "leaf sig alg ecdsa-sha256")
     runner_assert_true(r, len(tls::cert_sig_bytes(leaf_der)) > 0, "leaf sig extracted")
     runner_assert_true(r, len(tls::cert_spki_bytes(leaf_der)) > 0, "leaf spki extracted")
-    if target_arch() != "x86"
-        runner_assert_eq(r, tls::cert_verify_link(leaf_der, ca_der), 1, "leaf-ca link verifies")
-        let chain = [leaf, ca]
-        let sigs = tls::chain_verify_signatures(chain)
-        runner_assert_eq(r, sigs["ok"], 1, "ec chain signatures verify")
-    end
+    runner_assert_eq(r, tls::cert_verify_link(leaf_der, ca_der), 1, "leaf-ca link verifies")
+    let chain = [leaf, ca]
+    let sigs = tls::chain_verify_signatures(chain)
+    runner_assert_eq(r, sigs["ok"], 1, "ec chain signatures verify")
 
-    # 5. SKE ECDSA sign/verify roundtrip with the leaf key (crypto P-256 requires 64-bit ints).
-    if target_arch() != "x86"
-        let key_der = crypto::pem_to_der(ec_leaf_key_pem(), "EC PRIVATE KEY")
-        let eckey = crypto::ec_parse_sec1_priv(key_der)
-        runner_assert_str_eq(r, eckey["error"], "", "leaf ec key parses")
-        let eph = crypto::p256_pub_from_priv(crypto::hex_to_bytes("06b9d3dad2e1b8c1c05b985c4e5d4942d4e5cd4b6d5b6d6546bec651d6840b28"))
-        let params2 = tls::ecdhe_server_params(eph)
-        let cli_rand = crypto::hex_to_bytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
-        let srv_rand = crypto::hex_to_bytes("202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f")
-        let signed_input = tls::ecdhe_sign_input(cli_rand, srv_rand, params2)
-        let esig = crypto::ecdsa_sign_hash(eckey["priv"], crypto::sha256_bytes(signed_input))
-        runner_assert_str_eq(r, esig["error"], "", "ske ecdsa signs")
-        let ske2 = tls::ecdhe_build_ske_body(params2, 4, 3, esig["der"])
-        let p2 = tls::ecdhe_parse_ske(ske2)
-        runner_assert_str_eq(r, p2["error"], "", "signed ske parses")
-        let leaf_spki = tls::cert_spki_bytes(leaf_der)
-        let leaf_pub = crypto::ec_parse_spki_pubkey(leaf_spki)
-        runner_assert_str_eq(r, leaf_pub["error"], "", "leaf spki parses")
-        let ok = crypto::ecdsa_verify_hash(leaf_pub["pub"], crypto::sha256_bytes(tls::ecdhe_sign_input(cli_rand, srv_rand, p2["params"])), p2["sig"])
-        runner_assert_eq(r, ok, 1, "ske ecdsa verifies")
-    end
+    # 5. SKE ECDSA sign/verify roundtrip with the leaf key.
+    let key_der = crypto::pem_to_der(ec_leaf_key_pem(), "EC PRIVATE KEY")
+    let eckey = crypto::ec_parse_sec1_priv(key_der)
+    runner_assert_str_eq(r, eckey["error"], "", "leaf ec key parses")
+    let eph = crypto::p256_pub_from_priv(crypto::hex_to_bytes("06b9d3dad2e1b8c1c05b985c4e5d4942d4e5cd4b6d5b6d6546bec651d6840b28"))
+    let params2 = tls::ecdhe_server_params(eph)
+    let cli_rand = crypto::hex_to_bytes("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+    let srv_rand = crypto::hex_to_bytes("202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f")
+    let signed_input = tls::ecdhe_sign_input(cli_rand, srv_rand, params2)
+    let esig = crypto::ecdsa_sign_hash(eckey["priv"], crypto::sha256_bytes(signed_input))
+    runner_assert_str_eq(r, esig["error"], "", "ske ecdsa signs")
+    let ske2 = tls::ecdhe_build_ske_body(params2, 4, 3, esig["der"])
+    let p2 = tls::ecdhe_parse_ske(ske2)
+    runner_assert_str_eq(r, p2["error"], "", "signed ske parses")
+    let leaf_spki = tls::cert_spki_bytes(leaf_der)
+    let leaf_pub = crypto::ec_parse_spki_pubkey(leaf_spki)
+    runner_assert_str_eq(r, leaf_pub["error"], "", "leaf spki parses")
+    let ok = crypto::ecdsa_verify_hash(leaf_pub["pub"], crypto::sha256_bytes(tls::ecdhe_sign_input(cli_rand, srv_rand, p2["params"])), p2["sig"])
+    runner_assert_eq(r, ok, 1, "ske ecdsa verifies")
 
     let failed = runner_summary(r)
     if failed > 0
