@@ -66,7 +66,9 @@ pub function tls_protect_aead(suite: int, key, nonce12, aad, plaintext) -> map
             return { "ciphertext": [], "tag": [], "error": "AEAD nonce must be 12 bytes" }
         end
         let res = crypto::aes_gcm_encrypt_bytes(key, nonce12, aad_or_empty(aad), data_or_empty(plaintext))
-        return { "ciphertext": res[0], "tag": res[1], "error": "" }
+        let ciphertext: array = res[0]
+        let tag: array = res[1]
+        return { "ciphertext": ciphertext, "tag": tag, "error": "" }
     end
     if suite_uses_chacha(suite) == 1
         if len(key) != 32
@@ -76,7 +78,9 @@ pub function tls_protect_aead(suite: int, key, nonce12, aad, plaintext) -> map
             return { "ciphertext": [], "tag": [], "error": "AEAD nonce must be 12 bytes" }
         end
         let res = crypto::chacha20_poly1305_encrypt_bytes(key, nonce12, aad_or_empty(aad), data_or_empty(plaintext))
-        return { "ciphertext": res[0], "tag": res[1], "error": "" }
+        let ciphertext: array = res[0]
+        let tag: array = res[1]
+        return { "ciphertext": ciphertext, "tag": tag, "error": "" }
     end
     return fail
 end
