@@ -20,15 +20,15 @@ import "./cipher.alya"
 ## `1` for AES-GCM suites, `0` otherwise.
 pub function suite_uses_aes_gcm(suite: int) -> int
     if suite == SUITE_AES_128_GCM_SHA256 or suite == SUITE_AES_256_GCM_SHA384
-        return 1
+        return true
     end
     if suite == SUITE_ECDHE_RSA_AES128_GCM_SHA256 or suite == SUITE_ECDHE_RSA_AES256_GCM_SHA384 or suite == SUITE_RSA_AES128_GCM_SHA256
-        return 1
+        return true
     end
     if suite == SUITE_ECDHE_ECDSA_AES128_GCM_SHA256
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Returns 1 when the suite negotiates ChaCha20-Poly1305 bulk encryption.
@@ -40,9 +40,9 @@ end
 ## `1` for ChaCha20-Poly1305 suites, `0` otherwise.
 pub function suite_uses_chacha(suite: int) -> int
     if suite == SUITE_CHACHA20_POLY1305_SHA256 or suite == SUITE_ECDHE_RSA_CHACHA20_POLY1305
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Encrypts and authenticates payload bytes with the suite AEAD.
@@ -58,7 +58,7 @@ end
 ## Map with `ciphertext`, `tag`, and `error` fields (`error` empty on success).
 pub function tls_protect_aead(suite: int, key, nonce12, aad, plaintext) -> map
     let fail = { "ciphertext": [], "tag": [], "error": "unsupported cipher suite" }
-    if suite_uses_aes_gcm(suite) == 1
+    if suite_uses_aes_gcm(suite) == true
         if len(key) != 16 and len(key) != 32
             return { "ciphertext": [], "tag": [], "error": "AES-GCM key must be 16 or 32 bytes" }
         end
@@ -70,7 +70,7 @@ pub function tls_protect_aead(suite: int, key, nonce12, aad, plaintext) -> map
         let tag: array = res[1]
         return { "ciphertext": ciphertext, "tag": tag, "error": "" }
     end
-    if suite_uses_chacha(suite) == 1
+    if suite_uses_chacha(suite) == true
         if len(key) != 32
             return { "ciphertext": [], "tag": [], "error": "ChaCha20 key must be 32 bytes" }
         end
@@ -100,7 +100,7 @@ end
 ## ### Returns
 ## Map with `plaintext` and `error` fields (`error` empty on success).
 pub function tls_unprotect_aead(suite: int, key, nonce12, aad, ciphertext, tag) -> map
-    if suite_uses_aes_gcm(suite) == 1
+    if suite_uses_aes_gcm(suite) == true
         let pt = []
         try
             pt = crypto::aes_gcm_decrypt_bytes(key, nonce12, aad_or_empty(aad), data_or_empty(ciphertext), tag)
@@ -109,7 +109,7 @@ pub function tls_unprotect_aead(suite: int, key, nonce12, aad, ciphertext, tag) 
         end
         return { "plaintext": pt, "error": "" }
     end
-    if suite_uses_chacha(suite) == 1
+    if suite_uses_chacha(suite) == true
         let pt = []
         try
             pt = crypto::chacha20_poly1305_decrypt_bytes(key, nonce12, aad_or_empty(aad), data_or_empty(ciphertext), tag)

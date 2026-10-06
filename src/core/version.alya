@@ -115,9 +115,9 @@ end
 ## `1` for TLS 1.0 .. TLS 1.3, `0` otherwise.
 pub function version_is_supported(code: int) -> int
     if code == TlsVersion.Tls10 or code == TlsVersion.Tls11 or code == TlsVersion.Tls12 or code == TlsVersion.Tls13
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Returns 1 for versions considered secure by default policy.
@@ -129,9 +129,9 @@ end
 ## `1` for TLS 1.2 and TLS 1.3, `0` otherwise.
 pub function version_is_secure(code: int) -> int
     if code == TlsVersion.Tls12 or code == TlsVersion.Tls13
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Negotiates the highest version acceptable to both endpoints.
@@ -150,7 +150,7 @@ pub function version_negotiate(min_version: int, max_version: int, peer_version:
     if min_version > max_version
         return 0
     end
-    if version_is_supported(peer_version) == 0
+    if version_is_supported(peer_version) == false
         return 0
     end
     if version_compare(peer_version, min_version) < 0

@@ -60,16 +60,16 @@ pub function der_find(data, needle, from_pos: int = 0) -> int
     end
     let i = off
     while i + len(needle) <= len(data)
-        let hit = 1
+        let hit = true
         let j = 0
         while j < len(needle)
             if data[i + j] != needle[j]
-                hit = 0
+                hit = false
                 break
             end
             j += 1
         end
-        if hit == 1
+        if hit == true
             return i
         end
         i += 1
@@ -604,33 +604,33 @@ end
 ## Returns 1 when an OID body is sha256WithRSAEncryption.
 pub function oid_is_rsa_sha256(oid) -> int
     if oid is null or len(oid) != 9
-        return 0
+        return false
     end
     let want = [42, 134, 72, 134, 247, 13, 1, 1, 11]
     let i = 0
     while i < 9
         if oid[i] != want[i]
-            return 0
+            return false
         end
         i += 1
     end
-    return 1
+    return true
 end
 
 ## Returns 1 when an OID body is ecdsa-with-SHA256.
 pub function oid_is_ecdsa_sha256(oid) -> int
     if oid is null or len(oid) != 8
-        return 0
+        return false
     end
     let want = [42, 134, 72, 206, 61, 4, 3, 2]
     let i = 0
     while i < 8
         if oid[i] != want[i]
-            return 0
+            return false
         end
         i += 1
     end
-    return 1
+    return true
 end
 
 ## Extracts the issuer Name bytes of a certificate.

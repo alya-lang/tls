@@ -25,28 +25,28 @@ pub const ECDHE_SIG_ECDSA = 3
 ## Returns 1 when the suite negotiates ECDHE with an RSA certificate.
 pub function suite_is_ecdhe_rsa(suite: int) -> int
     if suite == SUITE_ECDHE_RSA_AES128_GCM_SHA256 or suite == SUITE_ECDHE_RSA_AES256_GCM_SHA384
-        return 1
+        return true
     end
     if suite == SUITE_ECDHE_RSA_CHACHA20_POLY1305 or suite == SUITE_ECDHE_RSA_AES128_SHA256
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Returns 1 when the suite negotiates ECDHE with an ECDSA certificate.
 pub function suite_is_ecdsa(suite: int) -> int
     if suite == SUITE_ECDHE_ECDSA_AES128_GCM_SHA256
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Returns 1 when the suite needs an ephemeral ServerKeyExchange flight.
 pub function suite_needs_ske(suite: int) -> int
-    if suite_is_ecdhe_rsa(suite) == 1 or suite_is_ecdsa(suite) == 1
-        return 1
+    if suite_is_ecdhe_rsa(suite) == true or suite_is_ecdsa(suite) == true
+        return true
     end
-    return 0
+    return false
 end
 
 ## Builds the ServerECDHParams block for a P-256 or X25519 point.

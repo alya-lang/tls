@@ -315,18 +315,18 @@ end
 ## `1` when valid, `0` otherwise.
 pub function TlsConfig.is_valid(self: TlsConfig) -> int
     if self.host is null or self.host == ""
-        return 0
+        return false
     end
     if self.port <= 0 or self.port > 65535
-        return 0
+        return false
     end
     if self.min_version > self.max_version
-        return 0
+        return false
     end
     if self.timeout_ms <= 0
-        return 0
+        return false
     end
-    return 1
+    return true
 end
 
 ## Returns an immutable copy bound to a different host (SNI follows).
@@ -396,12 +396,12 @@ end
 ## `1` for `Established`/`Handshaked` states with a version set.
 pub function TlsSession.is_established(self: TlsSession) -> int
     if self.version == 0
-        return 0
+        return false
     end
     if self.state == TlsState.Established or self.state == TlsState.Handshaked
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 # ───────────────────────────────────────────────────────────────
@@ -417,9 +417,9 @@ end
 ## `1` when `last_error` is empty, `0` otherwise.
 pub function TlsContext.is_ok(self: TlsContext) -> int
     if self.last_error is null or self.last_error == ""
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Records a failure reason and moves the context to `Failed`.

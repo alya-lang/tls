@@ -53,9 +53,9 @@ end
 ## `1` when both armor boundaries are present, `0` otherwise.
 pub function pem_has_block(pem, label: string) -> int
     if pem_body(pem, label) == ""
-        return 0
+        return false
     end
-    return 1
+    return true
 end
 
 ## Decodes a PEM block into raw DER bytes.

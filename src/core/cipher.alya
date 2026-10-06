@@ -104,9 +104,9 @@ end
 pub function cipher_is_weak(suite: int) -> int
     let s = cipher_strength(suite)
     if s <= 1
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Returns the default suite preference ordered strongest-first.
@@ -169,7 +169,7 @@ pub function cipher_filter_aead(suites) -> array
     end
     let i = 0
     while i < len(suites)
-        if cipher_is_aead(suites[i]) == 1
+        if cipher_is_aead(suites[i]) == true
             out.push(suites[i])
         end
         i += 1

@@ -24,35 +24,35 @@ import "./x509.alya"
 ## `1` on match, `0` otherwise.
 pub function dns_pattern_matches(pattern, hostname) -> int
     if pattern is null or hostname is null
-        return 0
+        return false
     end
     let pat = lower(trim(pattern))
     let host = lower(trim(hostname))
     if pat == "" or host == ""
-        return 0
+        return false
     end
     if pat == host
-        return 1
+        return true
     end
     if len(pat) > 2 and substring(pat, 0, 2) == "*."
         let suffix = substring(pat, 2, len(pat) - 2)
         if suffix == "" or index_of(suffix, "*") >= 0
-            return 0
+            return false
         end
         if len(host) <= len(suffix)
-            return 0
+            return false
         end
         let tail = substring(host, len(host) - len(suffix), len(suffix))
         if tail != suffix
-            return 0
+            return false
         end
         let left = substring(host, 0, len(host) - len(suffix) - 1)
         if left == "" or index_of(left, ".") >= 0
-            return 0
+            return false
         end
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Verifies a hostname against certificate SAN entries, then CN.
@@ -65,17 +65,17 @@ end
 ## `1` on match, `0` otherwise.
 pub function verify_hostname(cert: TlsCertificate, hostname: string) -> int
     if hostname is null or hostname == ""
-        return 0
+        return false
     end
     if len(cert.san) > 0
         let i = 0
         while i < len(cert.san)
-            if dns_pattern_matches(cert.san[i], hostname) == 1
-                return 1
+            if dns_pattern_matches(cert.san[i], hostname) == true
+                return true
             end
             i += 1
         end
-        return 0
+        return false
     end
     return dns_pattern_matches(cert.subject_cn, hostname)
 end
@@ -94,18 +94,18 @@ end
 ## `1` when inside the window (or when `now_stamp` is empty), else `0`.
 pub function verify_time_window(not_before: string, not_after: string, now_stamp: string) -> int
     if now_stamp is null or now_stamp == ""
-        return 1
+        return true
     end
     if not_before is null or not_before == "" or not_after is null or not_after == ""
-        return 0
+        return false
     end
     if now_stamp < not_before
-        return 0
+        return false
     end
     if now_stamp > not_after
-        return 0
+        return false
     end
-    return 1
+    return true
 end
 
 ## Verifies a certificate time window.
@@ -130,12 +130,12 @@ end
 ## `1` on constant-time match, `0` otherwise.
 pub function verify_fingerprint(cert: TlsCertificate, expected: string) -> int
     if expected is null or expected == ""
-        return 0
+        return false
     end
     let want = fingerprint_normalize(expected)
     let have = fingerprint_normalize(cert.fingerprint_sha256)
     if want == "" or have == ""
-        return 0
+        return false
     end
     return alya_tls_const_eq(have, want)
 end
@@ -162,9 +162,9 @@ pub function cert_name_eq(a, b) -> int
         y = b + ""
     end
     if x == y and x != ""
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Checks one chain link: child issuer matches parent subject.
@@ -176,13 +176,13 @@ end
 ## ### Returns
 ## `1` when linked, `0` otherwise.
 pub function chain_link_ok(child: TlsCertificate, parent: TlsCertificate) -> int
-    if cert_name_eq(child.issuer, parent.subject) == 1
-        return 1
+    if cert_name_eq(child.issuer, parent.subject) == true
+        return true
     end
-    if cert_name_eq(child.issuer_cn, parent.subject_cn) == 1
-        return 1
+    if cert_name_eq(child.issuer_cn, parent.subject_cn) == true
+        return true
     end
-    return 0
+    return false
 end
 
 ## Verifies name linkage across an ordered leaf-to-root chain.
