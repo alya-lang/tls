@@ -36,7 +36,7 @@ pub function crl_tlv_at(data, pos: int) -> map
     let length = 0
     let i = 0
     while i < octets
-        length = length * 256 + data[pos + 2 + i]
+        length *= 256 + data[pos + 2 + i]
         i += 1
     end
     return { "tag": tag, "length": length, "header_len": 2 + octets, "total_len": 2 + octets + length, "error": "" }
@@ -58,7 +58,7 @@ pub function crl_time_str(data, pos: int, length: int) -> string
     end
     let k = 0
     while k < length
-        out = out + chr(data[pos + k])
+        out += chr(data[pos + k])
         k += 1
     end
     return out
@@ -166,7 +166,7 @@ pub function crl_parse(der) -> map
                 while k < serial["length"]
                     if k >= skip
                         let b = der[epos + entry["header_len"] + serial["header_len"] + k]
-                        sh = sh + char_at(hex, bit_and(bit_shr(b, 4), 15)) + char_at(hex, bit_and(b, 15))
+                        sh += char_at(hex, bit_and(bit_shr(b, 4), 15)) + char_at(hex, bit_and(b, 15))
                     end
                     k += 1
                 end

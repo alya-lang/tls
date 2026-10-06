@@ -319,16 +319,16 @@ pub function client_hello_sni(body) -> string
         return ""
     end
     let suite_len = body[pos] * 256 + body[pos + 1]
-    pos = pos + 2 + suite_len + 1
+    pos += 2 + suite_len + 1
     if len(body) < pos + 1
         return ""
     end
-    pos = pos + 1 + body[pos]
+    pos += 1 + body[pos]
     if len(body) < pos + 2
         return ""
     end
     let ext_total = body[pos] * 256 + body[pos + 1]
-    pos = pos + 2
+    pos += 2
     let end_pos = pos + ext_total
     if end_pos > len(body)
         end_pos = len(body)
@@ -336,7 +336,7 @@ pub function client_hello_sni(body) -> string
     while pos + 4 <= end_pos
         let etype = body[pos] * 256 + body[pos + 1]
         let elen = body[pos + 2] * 256 + body[pos + 3]
-        pos = pos + 4
+        pos += 4
         if pos + elen > end_pos
             break
         end
@@ -348,14 +348,14 @@ pub function client_hello_sni(body) -> string
                     let out = ""
                     let n = 0
                     while n < name_len
-                        out = out + chr(body[pos + 5 + n])
+                        out += chr(body[pos + 5 + n])
                         n += 1
                     end
                     return out
                 end
             end
         end
-        pos = pos + elen
+        pos += elen
     end
     return ""
 end
@@ -423,7 +423,7 @@ pub function alpn_select(server_protos, client_protos) -> string
         let cand = server_protos[i]
         let j = 0
         while j < len(client_protos)
-            if alpn_str_eq(client_protos[j], cand) == 1
+            if alpn_str_eq(client_protos[j], cand) == true
                 return cand
             end
             j += 1
@@ -434,11 +434,11 @@ pub function alpn_select(server_protos, client_protos) -> string
 end
 
 # Compares two strings by value, normalizing array-derived operands.
-function alpn_str_eq(a: string, b: string) -> int
+function alpn_str_eq(a: string, b: string) -> bool
     if (a + "") == (b + "")
-        return 1
+        return true
     end
-    return 0
+    return false
 end
 
 ## Parses a ClientHello body (without record/handshake headers).
@@ -523,7 +523,7 @@ pub function parse_client_hello(body) -> map
                     sni = ""
                     let n = 0
                     while n < name_len
-                        sni = sni + chr(body[pos + 5 + n])
+                        sni += chr(body[pos + 5 + n])
                         n += 1
                     end
                 end
@@ -543,7 +543,7 @@ pub function parse_client_hello(body) -> map
                     let proto = ""
                     let r = 0
                     while r < plen
-                        proto = proto + chr(body[q + r])
+                        proto += chr(body[q + r])
                         r += 1
                     end
                     alpn.push(proto)

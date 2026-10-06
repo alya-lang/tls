@@ -149,13 +149,13 @@ pub function ticket_open(ticket_key, ticket, nonce, max_age_ms: int = 0) -> map
     let sni = ""
     i = 0
     while i < slen
-        sni = sni + chr(plain[5 + mlen + 1 + i])
+        sni += chr(plain[5 + mlen + 1 + i])
         i += 1
     end
     let created = 0
     i = 0
     while i < 8
-        created = created * 256 + plain[5 + mlen + 1 + slen + i]
+        created *= 256 + plain[5 + mlen + 1 + slen + i]
         i += 1
     end
     if max_age_ms > 0 and clock_ms() - created > max_age_ms

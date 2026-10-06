@@ -22,7 +22,7 @@ import "./x509.alya"
 ##
 ## ### Returns
 ## `1` on match, `0` otherwise.
-pub function dns_pattern_matches(pattern, hostname) -> int
+pub function dns_pattern_matches(pattern, hostname) -> bool
     if pattern is null or hostname is null
         return false
     end
@@ -92,7 +92,7 @@ end
 ##
 ## ### Returns
 ## `1` when inside the window (or when `now_stamp` is empty), else `0`.
-pub function verify_time_window(not_before: string, not_after: string, now_stamp: string) -> int
+pub function verify_time_window(not_before: string, not_after: string, now_stamp: string) -> bool
     if now_stamp is null or now_stamp == ""
         return true
     end
@@ -152,7 +152,7 @@ end
 ##
 ## ### Returns
 ## `1` on match, `0` otherwise.
-pub function cert_name_eq(a, b) -> int
+pub function cert_name_eq(a, b) -> bool
     let x = ""
     if a is not null
         x = a + ""
@@ -202,7 +202,7 @@ pub function chain_verify_linkage(chain, now_stamp: string = "") -> map
         return { "ok": 0, "length": 0, "detail": "empty chain" }
     end
     if len(chain) == 1
-        if verify_cert_time(chain[0], now_stamp) == 0
+        if verify_cert_time(chain[0], now_stamp) == false
             return { "ok": 0, "length": 1, "detail": "leaf outside validity window" }
         end
         return { "ok": 1, "length": 1, "detail": "single-certificate chain linked" }
@@ -212,12 +212,12 @@ pub function chain_verify_linkage(chain, now_stamp: string = "") -> map
         if chain_link_ok(chain[i], chain[i + 1]) == 0
             return { "ok": 0, "length": len(chain), "detail": "link broken at position " + str(i) }
         end
-        if verify_cert_time(chain[i], now_stamp) == 0
+        if verify_cert_time(chain[i], now_stamp) == false
             return { "ok": 0, "length": len(chain), "detail": "certificate outside validity window at position " + str(i) }
         end
         i += 1
     end
-    if verify_cert_time(chain[len(chain) - 1], now_stamp) == 0
+    if verify_cert_time(chain[len(chain) - 1], now_stamp) == false
         return { "ok": 0, "length": len(chain), "detail": "root outside validity window" }
     end
     return { "ok": 1, "length": len(chain), "detail": "chain linkage verified (signatures unchecked)" }
@@ -237,34 +237,34 @@ end
 ## `1` on valid signature, `0` otherwise.
 pub function cert_verify_link(child_der, parent_der) -> int
     if child_der is null or parent_der is null or len(child_der) == 0 or len(parent_der) == 0
-        return 0
+        return false
     end
     let tbs = cert_tbs_bytes(child_der)
     let sig = cert_sig_bytes(child_der)
     let alg = cert_sig_alg_oid(child_der)
     if len(tbs) == 0 or len(sig) == 0
-        return 0
+        return false
     end
     if oid_is_rsa_sha256(alg) == 1
         let parent_key = crypto::rsa_parse_pubkey(parent_der)
         if parent_key["error"] != ""
-            return 0
+            return false
         end
         return crypto::rsa_verify_cert(child_der, parent_key["n"], parent_key["e"])
     end
     if oid_is_ecdsa_sha256(alg) == 1
         let spki = cert_spki_bytes(parent_der)
         if len(spki) == 0
-            return 0
+            return false
         end
         let eckey = crypto::ec_parse_spki_pubkey(spki)
         if eckey["error"] != ""
-            return 0
+            return false
         end
         let digest = crypto::sha256_bytes(tbs)
         return crypto::ecdsa_verify_hash(eckey["pub"], digest, sig)
     end
-    return 0
+    return false
 end
 
 ## Verifies RSA/ECDSA signatures across an ordered leaf-to-root chain.
@@ -291,16 +291,16 @@ pub function chain_verify_signatures(chain) -> map
     end
     i = 0
     while i + 1 < len(chain)
-        if cert_verify_link(chain[i].der, chain[i + 1].der) == 0
+        if cert_verify_link(chain[i].der, chain[i + 1].der) == false
             return { "ok": 0, "checked": i, "detail": "signature invalid at position " + str(i) }
         end
         i += 1
     end
     let root = chain[len(chain) - 1]
-    if cert_name_eq(root.subject, root.issuer) == 0 and cert_name_eq(root.subject_cn, root.issuer_cn) == 0
+    if cert_name_eq(root.subject, root.issuer) == false and cert_name_eq(root.subject_cn, root.issuer_cn) == false
         return { "ok": 0, "checked": i, "detail": "root is not self-signed (no trust store)" }
     end
-    if cert_verify_link(root.der, root.der) == 0
+    if cert_verify_link(root.der, root.der) == false
         return { "ok": 0, "checked": i, "detail": "root self-signature invalid" }
     end
     return { "ok": 1, "checked": len(chain), "detail": "all signatures verified" }
@@ -365,13 +365,13 @@ pub function verify_peer(cert: TlsCertificate, hostname: string, verify_mode: in
     end
     let detail = ""
     if host_ok == 0
-        detail = detail + "hostname mismatch; "
+        detail += "hostname mismatch; "
     end
     if time_ok == 0
-        detail = detail + "certificate not in validity window; "
+        detail += "certificate not in validity window; "
     end
     if pin_ok == 0
-        detail = detail + "fingerprint pin mismatch; "
+        detail += "fingerprint pin mismatch; "
     end
     if verify_mode == TlsVerifyMode.Optional
         return { "ok": 1, "host_ok": host_ok, "time_ok": time_ok, "pin_ok": pin_ok, "detail": "advisory: " + trim(detail) }

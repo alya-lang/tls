@@ -264,7 +264,7 @@ pub function tls_handshake_complete_ecdhe(ctx: TlsContext) -> TlsContext
         if pubkey["error"] != ""
             return ctx.fail("server RSA key unparseable: " + pubkey["error"])
         end
-        if crypto::rsa_verify(pubkey["n"], pubkey["e"], "sha256", signed_input, parsed["sig"]) == 0
+        if crypto::rsa_verify(pubkey["n"], pubkey["e"], "sha256", signed_input, parsed["sig"]) == false
             return ctx.fail("ServerKeyExchange RSA signature invalid")
         end
     else
@@ -280,7 +280,7 @@ pub function tls_handshake_complete_ecdhe(ctx: TlsContext) -> TlsContext
             return ctx.fail("server EC key unparseable: " + ecpub["error"])
         end
         let digest = crypto::sha256_bytes(signed_input)
-        if crypto::ecdsa_verify_hash(ecpub["pub"], digest, parsed["sig"]) == 0
+        if crypto::ecdsa_verify_hash(ecpub["pub"], digest, parsed["sig"]) == false
             return ctx.fail("ServerKeyExchange ECDSA signature invalid")
         end
     end

@@ -22,18 +22,18 @@ function _ocsp_sha1_oid() -> array
 end
 
 ## Compares two byte arrays for equality.
-function _ocsp_bytes_eq(a, b) -> int
+function _ocsp_bytes_eq(a, b) -> bool
     if a is null or b is null or len(a) != len(b)
-        return 0
+        return false
     end
     let i = 0
     while i < len(a)
         if a[i] != b[i]
-            return 0
+            return false
         end
         i += 1
     end
-    return 1
+    return true
 end
 
 ## Copies a byte window from an array.
@@ -64,7 +64,7 @@ function _ocsp_time_at(data, pos: int) -> map
     let raw = ""
     let i = 0
     while i < t["length"]
-        raw = raw + chr(data[start + i])
+        raw += chr(data[start + i])
         i += 1
     end
     let norm = normalize_time_stamp(raw)
@@ -189,7 +189,7 @@ pub function ocsp_parse_response(der) -> map
         return fail
     end
     let type_oid = _ocsp_slice(der, rpos + rtype["header_len"], rtype["length"])
-    if _ocsp_bytes_eq(type_oid, _ocsp_basic_oid()) == 0
+    if _ocsp_bytes_eq(type_oid, _ocsp_basic_oid()) == false
         return { "status": 0, "tbs": [], "sig_alg_oid": [], "sig": [], "responder_tag": 0, "responder_id": [], "single": null, "error": "not a BasicOCSPResponse" }
     end
     rpos += rtype["total_len"]
@@ -361,7 +361,7 @@ pub function ocsp_validate_for_cert(resp_der, leaf_der, issuer_der, now_stamp: s
     if single is null
         return fail
     end
-    if _ocsp_bytes_eq(single["hash_oid"], _ocsp_sha1_oid()) == 0
+    if _ocsp_bytes_eq(single["hash_oid"], _ocsp_sha1_oid()) == false
         return { "status": "", "verified": 0, "detail": "OCSP CertID needs SHA-1" }
     end
     let name_der = cert_issuer_name_der(issuer_der)
@@ -369,10 +369,10 @@ pub function ocsp_validate_for_cert(resp_der, leaf_der, issuer_der, now_stamp: s
     if len(name_der) == 0 or len(key_bytes) == 0
         return { "status": "", "verified": 0, "detail": "issuer identity unreadable" }
     end
-    if _ocsp_bytes_eq(single["name_hash"], crypto::sha1_bytes(name_der)) == 0
+    if _ocsp_bytes_eq(single["name_hash"], crypto::sha1_bytes(name_der)) == false
         return { "status": "", "verified": 0, "detail": "OCSP issuer name mismatch" }
     end
-    if _ocsp_bytes_eq(single["key_hash"], crypto::sha1_bytes(key_bytes)) == 0
+    if _ocsp_bytes_eq(single["key_hash"], crypto::sha1_bytes(key_bytes)) == false
         return { "status": "", "verified": 0, "detail": "OCSP issuer key mismatch" }
     end
     let leaf_serial = _ocsp_norm_serial_hex(parse_serial_hex(leaf_der))
@@ -384,11 +384,11 @@ pub function ocsp_validate_for_cert(resp_der, leaf_der, issuer_der, now_stamp: s
         return { "status": single["cert_status"], "verified": 0, "detail": "certificate " + single["cert_status"] }
     end
     if parsed["responder_tag"] == 162
-        if _ocsp_bytes_eq(parsed["responder_id"], crypto::sha1_bytes(key_bytes)) == 0
+        if _ocsp_bytes_eq(parsed["responder_id"], crypto::sha1_bytes(key_bytes)) == false
             return { "status": "good", "verified": 0, "detail": "OCSP responder not bound to issuer" }
         end
     elif parsed["responder_tag"] == 161
-        if _ocsp_bytes_eq(parsed["responder_id"], name_der) == 0
+        if _ocsp_bytes_eq(parsed["responder_id"], name_der) == false
             return { "status": "good", "verified": 0, "detail": "OCSP responder not bound to issuer" }
         end
     else

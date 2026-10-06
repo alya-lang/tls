@@ -35,7 +35,7 @@ pub function tlv_at(data, pos: int) -> map
     let length = 0
     let i = 0
     while i < octets
-        length = length * 256 + data[pos + 2 + i]
+        length *= 256 + data[pos + 2 + i]
         i += 1
     end
     return { "tag": tag, "length": length, "header_len": 2 + octets, "total_len": 2 + octets + length, "error": "" }
@@ -98,14 +98,14 @@ pub function der_string_value(data, pos: int, length: int, tag: int) -> string
     if tag == 30
         let i = 0
         while i + 1 < length
-            out = out + chr(data[pos + i + 1])
+            out += chr(data[pos + i + 1])
             i += 2
         end
         return out
     end
     let k = 0
     while k < length
-        out = out + chr(data[pos + k])
+        out += chr(data[pos + k])
         k += 1
     end
     return out
@@ -196,7 +196,7 @@ pub function collect_dns_names(der) -> array
     let val_end = len(der)
     let oct = tlv_at(der, val_pos)
     if oct["error"] == "" and oct["tag"] == 4 and val_pos + oct["total_len"] <= len(der)
-        val_pos = val_pos + oct["header_len"]
+        val_pos += oct["header_len"]
         val_end = val_pos + oct["length"]
     else
         val_end = hit + t["total_len"] + 64
@@ -212,11 +212,11 @@ pub function collect_dns_names(der) -> array
                 let name = ""
                 let k = 0
                 while k < n
-                    name = name + chr(der[i + 2 + k])
+                    name += chr(der[i + 2 + k])
                     k += 1
                 end
                 out.push(name)
-                i = i + 2 + n
+                i += 2 + n
             else
                 i += 1
             end
@@ -248,14 +248,14 @@ pub function collect_time_stamps(der) -> array
                 let raw = ""
                 let k = 0
                 while k < t["length"]
-                    raw = raw + chr(der[i + t["header_len"] + k])
+                    raw += chr(der[i + t["header_len"] + k])
                     k += 1
                 end
                 let norm = normalize_time_stamp(raw)
                 if norm != ""
                     out.push(norm)
                 end
-                i = i + t["total_len"]
+                i += t["total_len"]
             else
                 i += 1
             end
@@ -326,7 +326,7 @@ pub function parse_serial_hex(der) -> string
                 let k = 0
                 while k < sn["length"]
                     let b = der[pos + sn["header_len"] + k]
-                    out = out + char_at(hex, bit_and(bit_shr(b, 4), 15)) + char_at(hex, bit_and(b, 15))
+                    out += char_at(hex, bit_and(bit_shr(b, 4), 15)) + char_at(hex, bit_and(b, 15))
                     k += 1
                 end
                 return out
@@ -346,7 +346,7 @@ pub function parse_serial_hex(der) -> string
                 let k = 0
                 while k < t["length"]
                     let b = der[i + t["header_len"] + k]
-                    out = out + char_at(hex, bit_and(bit_shr(b, 4), 15)) + char_at(hex, bit_and(b, 15))
+                    out += char_at(hex, bit_and(bit_shr(b, 4), 15)) + char_at(hex, bit_and(b, 15))
                     k += 1
                 end
                 return out

@@ -36,7 +36,7 @@ pub function pem_body(pem, label: string) -> string
     while i < len(rows)
         let row = trim(rows[i])
         if len(row) > 0
-            out = out + row
+            out += row
         end
         i += 1
     end
@@ -174,7 +174,7 @@ pub function fingerprint_normalize(fp) -> string
     while i < len(fp)
         let ch = char_at(fp, i)
         if ch != ":" and ch != " " and ch != "-"
-            out = out + lower(ch)
+            out += lower(ch)
         end
         i += 1
     end

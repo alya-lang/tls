@@ -43,7 +43,7 @@ end
 ## Connected `TlsContext` (established or failed).
 pub function tls_connect(config: TlsConfig) -> TlsContext
     let ctx = tls_context_new(config)
-    if config.is_valid() == 0
+    if config.is_valid() == false
         return ctx.fail("invalid TLS config (host, port, or version bounds)")
     end
     let sock = -1
@@ -439,7 +439,7 @@ end
 ## Array of record byte arrays ready for `tls_send_data`.
 pub function tls_wrap_app_data(ctx: TlsContext, plaintext) -> array
     let out = []
-    if ctx is null or ctx.session.is_established() == 0
+    if ctx is null or ctx.session.is_established() == false
         return out
     end
     let data = plaintext

@@ -55,7 +55,7 @@ function main()
     # 6. Accept gates without network
     runner_assert_eq(r, tls::tls_server_has_identity(srv), 0, "no identity yet")
     let idle = tls::tls_accept_handshake(srv, 10)
-    runner_assert_eq(r, idle == null, 1, "stopped server yields null")
+    runner_assert_eq(r, idle is null, 1, "stopped server yields null")
 
     let failed = runner_summary(r)
     if failed > 0

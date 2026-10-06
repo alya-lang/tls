@@ -64,7 +64,7 @@ pub function bytes_to_wire(data) -> string
     end
     let i = 0
     while i < len(data)
-        out = out + chr(data[i])
+        out += chr(data[i])
         i += 1
     end
     return out
