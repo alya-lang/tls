@@ -36,7 +36,7 @@ pub function crl_tlv_at(data, pos: int) -> map
     let length = 0
     let i = 0
     while i < octets
-        length *= 256 + data[pos + 2 + i]
+        length = length * 256 + data[pos + 2 + i]
         i += 1
     end
     return { "tag": tag, "length": length, "header_len": 2 + octets, "total_len": 2 + octets + length, "error": "" }
