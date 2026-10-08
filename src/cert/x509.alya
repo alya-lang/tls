@@ -77,6 +77,40 @@ pub function der_find(data, needle, from_pos: int = 0) -> int
     return -1
 end
 
+## Decodes a byte window into a text string without touching NUL bytes.
+##
+## Alya strings cannot hold NUL bytes (`chr(0)` throws since alya#129),
+## so a zero byte here means a false-positive TLV scan over binary data,
+## not a real text field. Returns "" instead of throwing so heuristic
+## scanners simply skip the candidate.
+##
+## ### Parameters
+## - `data`: DER byte array.
+## - `pos`: First content byte offset.
+## - `length`: Window length in bytes.
+##
+## ### Returns
+## Decoded string, or empty when the window is out of range or holds NUL.
+pub function der_text_value(data, pos: int, length: int) -> string
+    let out = ""
+    if data is null or length <= 0 or pos < 0 or pos + length > len(data)
+        return out
+    end
+    let k = 0
+    while k < length
+        if data[pos + k] == 0
+            return ""
+        end
+        k += 1
+    end
+    k = 0
+    while k < length
+        out += chr(data[pos + k])
+        k += 1
+    end
+    return out
+end
+
 ## Decodes a string value at a TLV value offset.
 ##
 ## Handles PrintableString, UTF8String, IA5String, TeletexString, and
@@ -96,19 +130,23 @@ pub function der_string_value(data, pos: int, length: int, tag: int) -> string
         return out
     end
     if tag == 30
+        # BMPString is UCS-2BE: ASCII text carries a zero high byte per
+        # character, so only the low byte must be NUL-checked.
         let i = 0
+        while i + 1 < length
+            if data[pos + i + 1] == 0
+                return ""
+            end
+            i += 2
+        end
+        i = 0
         while i + 1 < length
             out += chr(data[pos + i + 1])
             i += 2
         end
         return out
     end
-    let k = 0
-    while k < length
-        out += chr(data[pos + k])
-        k += 1
-    end
-    return out
+    return der_text_value(data, pos, length)
 end
 
 ## Reads the string TLV that follows an OID match.
@@ -209,13 +247,23 @@ pub function collect_dns_names(der) -> array
         if der[i] == 130
             let n = der[i + 1]
             if n > 0 and i + 2 + n <= val_end
-                let name = ""
-                let k = 0
-                while k < n
-                    name += chr(der[i + 2 + k])
-                    k += 1
+                # dNSNames are IA5 text; a NUL byte means a false-positive
+                # scan over binary data, so skip the candidate (chr(0) throws).
+                let has_nul = false
+                let c = 0
+                while c < n
+                    if der[i + 2 + c] == 0
+                        has_nul = true
+                        break
+                    end
+                    c += 1
                 end
-                out.push(name)
+                if has_nul == false
+                    let name = der_text_value(der, i + 2, n)
+                    if name != ""
+                        out.push(name)
+                    end
+                end
                 i += 2 + n
             else
                 i += 1
@@ -245,12 +293,9 @@ pub function collect_time_stamps(der) -> array
         if tag == 23 or tag == 24
             let t = tlv_at(der, i)
             if t["error"] == "" and i + t["header_len"] + t["length"] <= len(der)
-                let raw = ""
-                let k = 0
-                while k < t["length"]
-                    raw += chr(der[i + t["header_len"] + k])
-                    k += 1
-                end
+                # Stamps are ASCII digits plus `Z`; der_text_value returns ""
+                # on NUL (false-positive scan) and normalize rejects the rest.
+                let raw = der_text_value(der, i + t["header_len"], t["length"])
                 let norm = normalize_time_stamp(raw)
                 if norm != ""
                     out.push(norm)

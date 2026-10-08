@@ -48,15 +48,15 @@ end
 
 ## Converts a byte array into a single-byte wire string.
 ##
-## TEXT-SAFE ONLY: Alya strings cannot hold NUL bytes, so any payload with
-## zero bytes is silently truncated. Use byte arrays with `io/raw.alya`
-## for all binary transport.
+## TEXT-SAFE ONLY: Alya strings cannot hold NUL bytes, so payloads with
+## zero bytes throw (`chr(0)` throws since alya#129) instead of decoding.
+## Use byte arrays with `io/raw.alya` for all binary transport.
 ##
 ## ### Parameters
-## - `data`: Byte array.
+## - `data`: Byte array without zero bytes.
 ##
 ## ### Returns
-## Wire string of equal length (for NUL-free input).
+## Wire string of equal length.
 pub function bytes_to_wire(data) -> string
     let out = ""
     if data is null

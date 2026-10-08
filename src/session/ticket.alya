@@ -146,6 +146,20 @@ pub function ticket_open(ticket_key, ticket, nonce, max_age_ms: int = 0) -> map
     if 5 + mlen + 1 + slen + 8 != len(plain)
         return fail
     end
+    # Ticket plaintext is sealed locally, but a corrupt decrypt must report
+    # `invalid ticket`, never throw on NUL (chr(0) throws by design).
+    let bad = false
+    i = 0
+    while i < slen
+        if plain[5 + mlen + 1 + i] == 0
+            bad = true
+            break
+        end
+        i += 1
+    end
+    if bad == true
+        return fail
+    end
     let sni = ""
     i = 0
     while i < slen

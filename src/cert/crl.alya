@@ -52,16 +52,9 @@ end
 ## ### Returns
 ## Raw stamp string (e.g. `"260926221828Z"`).
 pub function crl_time_str(data, pos: int, length: int) -> string
-    let out = ""
-    if data is null or length <= 0 or pos < 0 or pos + length > len(data)
-        return out
-    end
-    let k = 0
-    while k < length
-        out += chr(data[pos + k])
-        k += 1
-    end
-    return out
+    # NUL bytes cannot land in strings (chr(0) throws); a zero here means
+    # a false-positive scan, so report "" and let normalize reject it.
+    return der_text_value(data, pos, length)
 end
 
 ## Copies a byte window from an array.

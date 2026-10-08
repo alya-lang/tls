@@ -61,11 +61,9 @@ function _ocsp_time_at(data, pos: int) -> map
     if start + t["length"] > len(data)
         return fail
     end
-    let raw = ""
-    let i = 0
-    while i < t["length"]
-        raw += chr(data[start + i])
-        i += 1
+    let raw = der_text_value(data, start, t["length"])
+    if raw == ""
+        return fail
     end
     let norm = normalize_time_stamp(raw)
     if norm == ""

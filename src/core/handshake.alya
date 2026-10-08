@@ -345,6 +345,20 @@ pub function client_hello_sni(body) -> string
             if list_len + 2 <= elen and body[pos + 2] == 0
                 let name_len = body[pos + 3] * 256 + body[pos + 4]
                 if 5 + name_len <= elen
+                    # Hostnames are DNS text; a NUL byte means corrupt input
+                    # (chr(0) throws), so report absent instead of crashing.
+                    let bad = false
+                    let c = 0
+                    while c < name_len
+                        if body[pos + 5 + c] == 0
+                            bad = true
+                            break
+                        end
+                        c += 1
+                    end
+                    if bad == true
+                        return ""
+                    end
                     let out = ""
                     let n = 0
                     while n < name_len
@@ -520,11 +534,24 @@ pub function parse_client_hello(body) -> map
             if list_len + 2 <= elen and body[pos + 2] == 0
                 let name_len = body[pos + 3] * 256 + body[pos + 4]
                 if 5 + name_len <= elen
-                    sni = ""
-                    let n = 0
-                    while n < name_len
-                        sni += chr(body[pos + 5 + n])
-                        n += 1
+                    # NUL bytes cannot land in strings (chr(0) throws);
+                    # keep the field empty on corrupt input and keep parsing.
+                    let bad = false
+                    let c = 0
+                    while c < name_len
+                        if body[pos + 5 + c] == 0
+                            bad = true
+                            break
+                        end
+                        c += 1
+                    end
+                    if bad == false
+                        sni = ""
+                        let n = 0
+                        while n < name_len
+                            sni += chr(body[pos + 5 + n])
+                            n += 1
+                        end
                     end
                 end
             end
@@ -540,13 +567,26 @@ pub function parse_client_hello(body) -> map
                 let plen = body[q]
                 q += 1
                 if plen > 0 and q + plen <= qend
-                    let proto = ""
-                    let r = 0
-                    while r < plen
-                        proto += chr(body[q + r])
-                        r += 1
+                    # Protocol names are text; skip NUL-bearing entries
+                    # instead of throwing on corrupt input.
+                    let bad = false
+                    let c = 0
+                    while c < plen
+                        if body[q + c] == 0
+                            bad = true
+                            break
+                        end
+                        c += 1
                     end
-                    alpn.push(proto)
+                    if bad == false
+                        let proto = ""
+                        let r = 0
+                        while r < plen
+                            proto += chr(body[q + r])
+                            r += 1
+                        end
+                        alpn.push(proto)
+                    end
                     q += plen
                 else
                     break
