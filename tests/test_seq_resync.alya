@@ -1,0 +1,129 @@
+## Sequence resync tests: interleaved handshake records in app data
+## Part of the Alya Language package ecosystem (https://github.com/alya-lang)
+##
+## Servers may pipeline handshake records (e.g. NewSessionTicket) with or
+## ahead of application data. The receive path must consume their sequence
+## numbers instead of skipping them undecrypted, or every later record
+## fails authentication. These tests drive that path over loopback TCP
+## with pre-established mock sessions (no live handshake, offline-safe).
+
+import "std/test"
+import "std/net" as net
+import "../src/lib.alya" as tls
+
+# Fixed traffic keys shared by a client/server mock pair.
+function seq_keys() -> map
+    return {
+        "skey": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        "siv": [21, 22, 23, 24]
+    }
+end
+
+function seq_server_mock()
+    let srv = tls::tls_mock_establish(tls::config("127.0.0.1"))
+    srv.role = tls::TlsRole.Server
+    # Dummy socket: protect_record only checks sock >= 0, never touches it.
+    srv.sock = 999
+    let k = seq_keys()
+    srv.keys["skey"] = k["skey"]
+    srv.keys["siv"] = k["siv"]
+    srv.keys["seq_send"] = 0
+    return srv
+end
+
+function seq_client_mock(sock: int)
+    let cli = tls::tls_mock_establish(tls::config("127.0.0.1"))
+    let k = seq_keys()
+    cli.keys["skey"] = k["skey"]
+    cli.keys["siv"] = k["siv"]
+    cli.keys["seq_recv"] = 0
+    cli.sock = sock
+    return cli
+end
+
+# Serves prebuilt wire records on one accepted connection, then closes.
+# Everything is sent up-front without waiting for a request, so the
+# single-threaded caller never blocks (TCP buffers the records).
+function seq_serve_once(listen_sock: int, wire) -> int
+    let acc: int = net::tcp_accept(listen_sock)
+    if acc < 0
+        return 0
+    end
+    let i: int = 0
+    while i < len(wire)
+        tls::raw_send(acc, wire[i])
+        i += 1
+    end
+    net::tcp_close(acc)
+    return 1
+end
+
+function main()
+    test_suite("TLS Sequence Resync Tests")
+    let r = runner_new()
+
+    # Record-level sequencing without sockets: skipping a ticket
+    # undecrypted must break the next record, consuming it must not.
+    let srv0 = seq_server_mock()
+    let ticket0 = tls::tls_protect_record(srv0, tls::TlsContentType.Handshake, [4, 0, 0, 2, 9, 9])
+    let app0 = tls::tls_protect_record(srv0, tls::TlsContentType.ApplicationData, [72, 105])
+    runner_assert_eq(r, len(ticket0) > 0, true, "ticket record protects")
+    runner_assert_eq(r, len(app0) > 0, true, "appdata record protects")
+    runner_assert_eq(r, srv0.keys["seq_send"], 2, "server seq advanced twice")
+
+    let cli0 = seq_client_mock(-1)
+    let skip = tls::tls_unprotect_record(cli0, ticket0)
+    runner_assert_str_eq(r, skip["error"], "", "ticket decrypts clean")
+    let dated = tls::tls_unprotect_record(cli0, app0)
+    runner_assert_str_eq(r, dated["error"], "", "appdata after ticket decrypts")
+    runner_assert_eq(r, dated["plaintext"][0], 72, "appdata first byte")
+    runner_assert_eq(r, cli0.keys["seq_recv"], 2, "client seq advanced twice")
+
+    # Loopback: [ticket][appdata] over a real socket must yield appdata.
+    let port: int = 38551
+    let ls: int = -1
+    while port < 38554
+        ls = net::tcp_listen(port)
+        if ls >= 0
+            break
+        end
+        port += 1
+    end
+    if ls >= 0
+        let srv = seq_server_mock()
+        let ticket_wire = tls::tls_protect_record(srv, tls::TlsContentType.Handshake, [4, 0, 0, 2, 9, 9])
+        let app_wire = tls::tls_protect_record(srv, tls::TlsContentType.ApplicationData, [72, 105])
+        let cli_sock: int = net::tcp_connect("127.0.0.1", port)
+        runner_assert_eq(r, cli_sock >= 0, true, "loopback connect succeeds")
+        seq_serve_once(ls, [ticket_wire, app_wire])
+        let cli = seq_client_mock(cli_sock)
+        let got = tls::tls_recv_encrypted(cli)
+        runner_assert_eq(r, len(got), 2, "appdata arrives past ticket")
+        runner_assert_eq(r, got[0], 72, "appdata byte 0")
+        runner_assert_eq(r, got[1], 105, "appdata byte 1")
+        runner_assert_eq(r, cli.keys["seq_recv"], 2, "recv consumed both records")
+        net::tcp_close(cli_sock)
+
+        # Two tickets in a row are skipped just the same.
+        let srv2 = seq_server_mock()
+        let t1 = tls::tls_protect_record(srv2, tls::TlsContentType.Handshake, [4, 0, 0, 1, 7])
+        let t2 = tls::tls_protect_record(srv2, tls::TlsContentType.Handshake, [4, 0, 0, 1, 8])
+        let a2 = tls::tls_protect_record(srv2, tls::TlsContentType.ApplicationData, [65])
+        let cli_sock2: int = net::tcp_connect("127.0.0.1", port)
+        seq_serve_once(ls, [t1, t2, a2])
+        let cli2 = seq_client_mock(cli_sock2)
+        let got2 = tls::tls_recv_encrypted(cli2)
+        runner_assert_eq(r, len(got2), 1, "appdata arrives past two tickets")
+        runner_assert_eq(r, got2[0], 65, "appdata byte")
+        runner_assert_eq(r, cli2.keys["seq_recv"], 3, "recv consumed all three")
+        net::tcp_close(cli_sock2)
+        net::tcp_close(ls)
+    end
+
+    let failed = runner_summary(r)
+    if failed > 0
+        exit(1)
+    end
+end
+
+main()
