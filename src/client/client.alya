@@ -50,10 +50,10 @@ pub function tls_connect(config: TlsConfig) -> TlsContext
     try
         sock = net::tcp_connect(config.host, config.port)
     catch e
-        return ctx.fail("TCP connection failed to {config.host}:{config.port}")
+        return ctx.fail(f"TCP connection failed to {config.host}:{config.port}")
     end
     if sock < 0
-        return ctx.fail("TCP connection failed to {config.host}:{config.port}")
+        return ctx.fail(f"TCP connection failed to {config.host}:{config.port}")
     end
     net::tcp_set_timeout(sock, config.timeout_ms)
     ctx.sock = sock

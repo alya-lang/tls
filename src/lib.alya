@@ -79,5 +79,5 @@ end
 
 ## Formats a negotiated session as a one-line summary.
 pub function session_summary(sess: TlsSession) -> string
-    return "{version_to_string(sess.version)} / {cipher_suite_name(sess.cipher_suite)} / sni={sess.sni}"
+    return f"{version_to_string(sess.version)} / {cipher_suite_name(sess.cipher_suite)} / sni={sess.sni}"
 end
