@@ -560,6 +560,7 @@ pub function tls_read_server_finished(ctx: TlsContext) -> array
             pending = hs_slice(pending, rec["consumed"], len(pending) - rec["consumed"])
             progress = 1
             if rec["type"] == TlsContentType.Alert
+                ctx.keys["pending_app"] = pending
                 return []
             end
             if rec["type"] == TlsContentType.ChangeCipherSpec
@@ -567,12 +568,19 @@ pub function tls_read_server_finished(ctx: TlsContext) -> array
             end
             let opened = tls_unprotect_record(ctx, full)
             if opened["error"] != ""
+                ctx.keys["pending_app"] = pending
                 return []
             end
             if opened["type"] != TlsContentType.Handshake
                 continue
             end
             let pt = opened["plaintext"]
+            # Non-Finished handshake content (e.g. a session ticket the
+            # server sends alongside Finished) must be skipped, not fatal:
+            # its sequence number is already consumed by unprotect above.
+            if len(pt) >= 4 and pt[0] != TlsHandshakeType.Finished
+                continue
+            end
             if len(pt) >= 16 and pt[0] == TlsHandshakeType.Finished
                 let verify = []
                 let i = 4
@@ -580,12 +588,18 @@ pub function tls_read_server_finished(ctx: TlsContext) -> array
                     verify.push(pt[i])
                     i += 1
                 end
+                # Bytes after Finished (pipelined ticket etc.) belong to the
+                # application phase: stash them for the recv path instead of
+                # dropping them (dropping desyncs every later record).
+                ctx.keys["pending_app"] = pending
                 return verify
             end
+            ctx.keys["pending_app"] = pending
             return []
         end
         rounds += 1
     end
+    ctx.keys["pending_app"] = pending
     return out
 end
 
@@ -634,7 +648,14 @@ pub function tls_recv_encrypted(ctx: TlsContext) -> array
     if ctx is null or ctx.sock < 0
         return out
     end
-    let pending = []
+    # Start from bytes stashed by the handshake reader (records that
+    # arrived alongside Finished). Stash leftovers back on every exit so
+    # pipelined records are never dropped.
+    let pending = ctx.keys["pending_app"]
+    if pending is null
+        pending = []
+    end
+    ctx.keys["pending_app"] = []
     let rounds = 0
     while rounds < 16
         let st = raw_recv_status(ctx.sock, 4096)
@@ -658,18 +679,29 @@ pub function tls_recv_encrypted(ctx: TlsContext) -> array
             pending = hs_slice(pending, rec["consumed"], len(pending) - rec["consumed"])
             progress = 1
             if rec["type"] == TlsContentType.Alert
+                ctx.keys["pending_app"] = pending
                 return []
             end
-            if rec["type"] != TlsContentType.ApplicationData
+            if rec["type"] == TlsContentType.ChangeCipherSpec
                 continue
             end
+            # Decrypt before dispatching: handshake records that arrive
+            # between application data (e.g. post-Finished session tickets)
+            # carry sequence numbers, so skipping them undecrypted would
+            # desync every later record.
             let opened = tls_unprotect_record(ctx, full)
             if opened["error"] != ""
+                ctx.keys["pending_app"] = pending
                 return []
             end
+            if opened["type"] != TlsContentType.ApplicationData
+                continue
+            end
+            ctx.keys["pending_app"] = pending
             return opened["plaintext"]
         end
         rounds += 1
     end
+    ctx.keys["pending_app"] = pending
     return out
 end
